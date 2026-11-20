@@ -7,6 +7,7 @@ Picks Triton GEMM configs from a traffic model (M3: L2-aware DRAM bytes) plus a 
 ## Install
     pip install -e . --no-deps          # torch 2.6 + triton 3.2 assumed; set LALA_TRITON_ROOT to relocate runs/ and profiles/
     python3 -m pytest -p no:anyio tests # 183 model unit tests, no GPU needed
+(If pip reports the package as `UNKNOWN-0.0.0`, your setuptools is older than 61: `pip install -U setuptools`. The editable install still imports fine.)
 
 ## Calibrate a new GPU (about 45 min on 2 GPUs; one GPU: use --shard 0/1, about 80 min)
     nohup python3 -m lala_triton.calibrate --out profiles/<gpu>.json --gpu 0 --shard 0/2 > c0.log &
