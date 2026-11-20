@@ -1,0 +1,152 @@
+{
+ "hbm_bw": 797168883288.2769,
+ "l2_bw": 4013294623176.45,
+ "timing_knee_MiB": {
+  "seq": 57.39449044100659,
+  "strided": 54.644826314679925
+ },
+ "curve": [
+  {
+   "variant": "seq",
+   "MiB": 16,
+   "extra": 0.04276982628747983
+  },
+  {
+   "variant": "seq",
+   "MiB": 32,
+   "extra": 0.08771926241449068
+  },
+  {
+   "variant": "seq",
+   "MiB": 48,
+   "extra": 0.3041509839115777
+  },
+  {
+   "variant": "seq",
+   "MiB": 64,
+   "extra": 0.5229304935740893
+  },
+  {
+   "variant": "seq",
+   "MiB": 72,
+   "extra": 0.6202531508524873
+  },
+  {
+   "variant": "seq",
+   "MiB": 80,
+   "extra": 0.683823481419398
+  },
+  {
+   "variant": "seq",
+   "MiB": 88,
+   "extra": 0.7757446543321906
+  },
+  {
+   "variant": "seq",
+   "MiB": 96,
+   "extra": 0.8000001091393669
+  },
+  {
+   "variant": "seq",
+   "MiB": 104,
+   "extra": 0.8497110098869753
+  },
+  {
+   "variant": "seq",
+   "MiB": 112,
+   "extra": 0.8440859335949182
+  },
+  {
+   "variant": "seq",
+   "MiB": 128,
+   "extra": 0.8009478744893899
+  },
+  {
+   "variant": "seq",
+   "MiB": 160,
+   "extra": 0.7169810740543094
+  },
+  {
+   "variant": "seq",
+   "MiB": 192,
+   "extra": 0.7198696679319407
+  },
+  {
+   "variant": "seq",
+   "MiB": 256,
+   "extra": 0.7690289403608264
+  },
+  {
+   "variant": "strided",
+   "MiB": 16,
+   "extra": 0.032258075872982905
+  },
+  {
+   "variant": "strided",
+   "MiB": 32,
+   "extra": 0.0891409914069643
+  },
+  {
+   "variant": "strided",
+   "MiB": 48,
+   "extra": 0.32926832081720714
+  },
+  {
+   "variant": "strided",
+   "MiB": 64,
+   "extra": 0.6064256448727567
+  },
+  {
+   "variant": "strided",
+   "MiB": 72,
+   "extra": 0.6702842453125384
+  },
+  {
+   "variant": "strided",
+   "MiB": 80,
+   "extra": 0.8011737725561527
+  },
+  {
+   "variant": "strided",
+   "MiB": 88,
+   "extra": 0.8386479666965063
+  },
+  {
+   "variant": "strided",
+   "MiB": 96,
+   "extra": 0.8812500022737368
+  },
+  {
+   "variant": "strided",
+   "MiB": 104,
+   "extra": 0.9060682332536645
+  },
+  {
+   "variant": "strided",
+   "MiB": 112,
+   "extra": 0.8967391373118689
+  },
+  {
+   "variant": "strided",
+   "MiB": 128,
+   "extra": 0.843601812713408
+  },
+  {
+   "variant": "strided",
+   "MiB": 160,
+   "extra": 0.7777777653878972
+  },
+  {
+   "variant": "strided",
+   "MiB": 192,
+   "extra": 0.7293023867785688
+  },
+  {
+   "variant": "strided",
+   "MiB": 256,
+   "extra": 0.7673235880460632
+  }
+ ],
+ "n_sm": 142,
+ "name": "NVIDIA RTX 6000 Ada Generation"
+}

@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "lala-triton"
+version = "0.1.0"
+description = "REIMPLEMENTATION of the M3 traffic-model-based Triton GEMM config selector (round 5)"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+[tool.setuptools.packages.find]
+include = ["lala_triton*"]

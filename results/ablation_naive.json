@@ -1,0 +1,28 @@
+{
+ "bf16": {
+  "n": 32,
+  "n_pick_differs": 26,
+  "m3_geomean": 0.958466202144574,
+  "naive_geomean": 0.9712593343453086,
+  "m3_worst": 1.0830384572327243,
+  "naive_worst": 2.121149348254348,
+  "naive_worst_shape": "('gate_up', 'bf16', 32)",
+  "m3_geomean_on_differing": 0.95046838216454,
+  "naive_geomean_on_differing": 0.9660116242589041,
+  "naive_frac_within_3pct": 0.875,
+  "m3_frac_within_3pct": 0.96875
+ },
+ "fp8": {
+  "n": 32,
+  "n_pick_differs": 21,
+  "m3_geomean": 1.025592381677257,
+  "naive_geomean": 1.0100571697487193,
+  "m3_worst": 1.8341962516541046,
+  "naive_worst": 1.8243700006612864,
+  "naive_worst_shape": "('gate_up', 'fp8', 1)",
+  "m3_geomean_on_differing": 0.9774495489806696,
+  "naive_geomean_on_differing": 0.9573356504596261,
+  "naive_frac_within_3pct": 0.6875,
+  "m3_frac_within_3pct": 0.65625
+ }
+}

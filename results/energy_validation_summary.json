@@ -1,0 +1,22 @@
+{
+ "bf16": {
+  "n": 32,
+  "geomean_time_ratio": 0.9599682762606304,
+  "geomean_energy_ratio": 0.9712104829925388,
+  "median_power_W_ours": 297.08476987418464,
+  "median_power_W_stock": 294.1574873475299,
+  "n_energy_not_tracking_time": 9,
+  "worst_energy_ratio": 1.098411609840932,
+  "worst_energy_shape": "('qkv', 'bf16', 8)"
+ },
+ "fp8": {
+  "n": 32,
+  "geomean_time_ratio": 1.0246024536577365,
+  "geomean_energy_ratio": 1.026516423117333,
+  "median_power_W_ours": 296.33278484665016,
+  "median_power_W_stock": 297.34308702956093,
+  "n_energy_not_tracking_time": 4,
+  "worst_energy_ratio": 1.7104078066392758,
+  "worst_energy_shape": "('gate_up', 'fp8', 1)"
+ }
+}

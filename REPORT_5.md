@@ -1,0 +1,182 @@
+# Round 5: `lala_triton`, a reimplemented selector packaged for Dongyoon
+
+> **Naming note (2026-11-20):** the Python package was renamed `tritonsel` -> `lala_triton` (repo `lala-triton`) (commands in this report use the new names); env vars `TRITONSEL_*` -> `LALA_TRITON_*`. 
+
+
+Run 2026-11-19 on the two RTX 6000 Ada GPUs (300 W cap; every timed run sat at the cap), torch 2.6.0+cu124, Triton 3.2.0.
+Thresholds: `PREREGISTRATION.md` **Amendment 5 / 5a**, written before any round-5 data. All timings use the sustained protocol (DRAM-cold rotating buffers, CUDA-graph replay, NVML clocks recorded, 3 interleaved reps, median).
+
+## Read this first: what this is and is not
+1. **It is a reimplementation.** The round 1-3 model code, calibration data, results CSVs and Amendments 3/3b/4 were missing from the working directory, and there is no `REPORT_4.md`. I rebuilt M3 and the time model from `triton-locality-killtest.md` Section 2, REPORT 1-3 and the surviving preregistration text. It is not bit-identical to the old code, and nothing here is "the old model, reproduced".
+2. **The ncu baseline gate (R5-0) has NOT run.** ncu is denied (`ERR_NVGPUCTRPERM`, driver 580.196.07, `RmProfilingAdminOnly: 1`; no sudo). So the reimplemented traffic model has **not** been checked against ncu DRAM bytes (the old 5.4% median error). Everything below that depends on the traffic model being right is unverified at that level; only end-to-end runtime results are measured. ECN was asked to enable counters.
+3. **L2_eff is not measured.** It is the round-1 constant (102 MiB; no misses to 88 MiB, knee about 102 MiB), labelled as such in the profile. My timing-based knee check (secondary, no threshold) gives 55-58 MiB, which disagrees with 102 MiB. The probe is crude (a hit still costs L2 time), so I did not tune anything to it, but the disagreement is unresolved.
+4. **One validation run was voided and redone.** The first run had a harness bug (dynamo's cache is keyed on a lambda's shared code object, so several Inductor methods silently ran the same kernel), giving a fake "everything ties" result. Kept as `results/validation_INVALID_*`; all numbers below are from the fixed harness (each method's CUDA graph is captured right after compiling).
+
+## Verdicts (pre-registered R5-V, held-out = Llama 3 8B GEMMs, 32 shapes per dtype, none used in calibration)
+| criterion | bf16 | fp8 |
+|---|---|---|
+| (i) geomean ours top-1 / Inductor max-autotune <= 1.03 | **0.958 PASS** | **1.026 PASS** |
+| (ii) no shape worse than 1.15 | worst 1.083 (`gate_up`, M=32) **PASS** | worst 1.834 (`gate_up`, M=1) **FAIL** |
+| (iii) M <= 32: within 1.10 of the per-M oracle on every shape | worst 1.082, 16/16 **PASS** | worst 1.812, 11/16 (69%) **FAIL** |
+
+**fp8 fails (ii) and (iii).** The failures are 5 shapes, not diffuse noise: `gate_up` (N=28672, K=4096) at M = 1, 8, 16, 32 (1.83, 1.25, 1.32, 1.25 vs Inductor) and `qkv` at M=32 (1.21). The other 11 M <= 32 fp8 shapes tie the oracle within 3%.
+
+**Documented fallback (benchmark top 5 for M <= 32), reported next to top-1:** it changes almost nothing. Fallback geomean vs Inductor: bf16 0.9585, fp8 1.0252; fp8 M <= 32 worst vs oracle still 1.81, 69% within 1.10. Reason: the model's top 5 are the same tile at G in {8,16,32,4,1}, so there is nothing different for the benchmark to try.
+
+**Diagnosis (post hoc, on the shapes it failed on):** in the DRAM-bound small-M regime the model predicts many tiles at exactly the DRAM roofline, so the ranking is a tie broken by enumeration order. The first tied tile (128x256x64, 8 warps) wastes most of its work at M=1 and measured 0.250 ms vs the oracle's 0.138 ms (the model predicted 0.151 ms for it). A tie-break that prefers tiles with less wasted compute/bytes would very likely fix this, **but I did not apply it**: the held-out shapes are already seen, and the pre-registration allows refits only on calibration shapes. Doing it honestly needs a new amendment and fresh held-out shapes (e.g. Dongyoon's larger ones). Per your stop rule, this is the pre-registered failure to decide on.
+
+## The numbers vs each baseline (bf16 prefers `ABT` weights, as in `nn.Linear`; sustained, medians)
+| | bf16 | fp8 |
+|---|---|---|
+| ours top-1 / Inductor max-autotune, geomean | 0.958 | 1.026 |
+| ours top-5 / Inductor max-autotune, geomean | 0.954 | 1.022 |
+| ours top-1 / cuBLAS (`torch.mm`, reduced-precision reduction off), geomean | 0.890 | 0.945 |
+| shapes within 3% of Inductor max-autotune | 97% | 66% |
+| shapes >= 5% faster than Inductor max-autotune | 22% (7/32) | 19% (6/32) |
+| predicted vs measured, ours top-1 (median abs log error; 189 rows) | 0.108 (about 11%), over-predicts | 0.133 (about 13%) |
+
+- Where ours is >= 5% faster than stock max-autotune: bf16 `qkv`/`gate_up` M=128-512 (up to 0.71), `down` M=128; fp8 `o` M=128/8192, `qkv` M=128/8192, `down` M=128. These are shapes where Inductor's autotuner picks ATen/cuBLAS or a stock tile under burst timing and the sustained ranking differs.
+- Inductor "default" (no autotune) is ATen, i.e. cuBLAS, so it is the same row as cuBLAS (ours/default 0.890 bf16, 0.946 fp8). nvMatmulHeuristics and the tritonBLAS-style baseline were **not run** (see Not done).
+- Calibration facts (reimplemented profile `profiles/rtx6000ada.json`): HBM 797 GB/s, L2 about 4.0 TB/s, eff tables for 351 (bf16 AB), 347 (bf16 ABT), 383 (fp8 ABT) feasible tiles, measured on 8192^3 under the sustained protocol (eff 0.04-0.47; the power cap makes them far below 1). The Little's-law latency was fit on calibration small-M shapes only: bf16 2.96 us, fp8 2.41 us. It is a weak fit: RMS log error on those shapes 0.45 (bf16) and 0.56 (fp8), versus 0.69 / 0.78 without the term. So the small-M term helps but is far from exact.
+- Split-K was **not added** (the template check was not done; stated rather than assumed).
+
+## Tuning cost (first call in a fresh process with fresh Triton and Inductor caches; median seconds per GEMM; 48 runs)
+| | select | compile | benchmark | total | vs stock max-autotune |
+|---|---|---|---|---|---|
+| bf16 ours top-1 | 0.03 | 2.3 | 0 | 2.3 | 0.36x |
+| bf16 ours top-5 | 0.03 | 3.2 | 0.6 | 3.9 | 0.59x |
+| bf16 stock max-autotune | 0 | 4.3 | 2.2 | 6.5 | 1x |
+| fp8 ours top-1 | 0.03 | 2.3 | 0 | 2.3 | **0.095x** |
+| fp8 ours top-5 | 0.03 | 3.4 | 0.6 | 4.1 | 0.165x |
+| fp8 stock max-autotune | 0 | 13.4 | 11.6 | 24.8 | 1x |
+
+Selection itself is about 30-40 ms; most of "ours" is Inductor's fixed compile cost.
+
+## Llama 3 8B decoder layer under `torch.compile`, bf16 (one rep per cell, ms per layer, sustained)
+RoPE and the KV-cache update are omitted; attention is SDPA with GQA; decode uses a 1024-token KV cache. These cells are **single reps**, and SM clocks differed between methods, so treat differences under a few percent as noise.
+
+| case | stock max-autotune | ours top-1 | default |
+|---|---|---|---|
+| prefill 512 | 1.988 | 1.978 | 2.473 |
+| prefill 2048 | 7.608 | 7.134 | 9.453 |
+| decode b=1 | 0.524 | 0.525 | 0.529 |
+| decode b=8 | 0.827 | 0.827 | 0.819 |
+| decode b=32 | 1.936 | 1.985 | 1.995 |
+
+Total compile/tuning time for the 5 shapes (fresh caches): stock max-autotune **93.8 s** (34.3 s benchmarking), ours top-1 **24.2 s** (0 benchmarking, 0.09 s selection), default 4.9 s. Layer latency: ours is about equal to max-autotune at decode and 512-token prefill, 6% lower at 2048-token prefill (clocks 1335 vs 983 MHz, single rep, so not claimed), 2.5% higher at decode b=32 (also within what I would call noise). Both beat default on prefill (ours 20-25% lower).
+
+## What Dongyoon needs to do on a new GPU (see `README.md`; tested from a fresh copy of the package in a clean venv)
+1. `pip install -e . --no-deps` (torch 2.6 / Triton 3.2); `python3 -m pytest -p no:anyio tests` (183 CPU tests).
+2. Calibrate: `python3 -m lala_triton.calibrate --out profiles/<gpu>.json --gpu N --shard i/n` per GPU, then once with `--build-only`. It took 42 min on 2 GPUs here (about 80 min estimated on one). **Pass `--l2-eff-mib`** for the new GPU: the default is the RTX 6000 Ada round-1 constant and will be wrong elsewhere. If ncu counters work, check it with the double-read probe (`lala_triton/_l2probe.py`).
+3. `lala_triton.inductor.enable(profile, k=1, bf16_layout='ABT')`, set `max_autotune_gemm_backends='TRITON'`, `torch.compile(..., mode='max-autotune-no-cudagraphs')`. (`enable()` turns off Inductor's FX-graph cache; otherwise a cache hit silently uses stock configs.)
+4. `python3 eval/run_eval.py --profile ... --models llama3-8b,llama3-70b --dtypes bf16,fp8 --out results/`, `eval/tuning_time.py`, `eval/e2e_layer.py`, then `eval/make_summary.py`. Validation: `eval/analyze_validation.py`.
+5. Smoke test of every integration: `python3 tests/smoke_integrations.py profiles/<gpu>.json`.
+Verified in the clean copy: install, tests, table writer (vLLM-style files), quick calibration plus profile build, smoke test (Inductor and `prune_configs_by`), and a `run_eval` row.
+
+## Known limitations
+- Reimplementation; traffic model not ncu-validated (gate R5-0 pending); L2_eff is a constant, and my timing probe disagrees with it.
+- **fp8 small-M `gate_up` (and `qkv` at M=32) fail the pre-registered checks** because of the tie-break described above. bf16 passes everything, but only on Llama 3 8B shapes on one GPU type.
+- Small-M latency term fit is crude (RMS log error about 0.5 on calibration).
+- eff is calibrated on one shape (8192^3, G=8); the calibration and oracle harness use our transcription of Inductor's template, not Inductor's compiled kernel (the round-3 equivalence check was not repeated). The Inductor numbers (ours, max-autotune, default) are all through real Inductor.
+- The "oracle" is restricted (model top-20 U 100 random tiles, G=8, sustained), and exists only for M <= 32.
+- Inductor's config hook cannot see B's layout (bf16 layout is a parameter); fp16 treated as bf16; Triton 3.2 / torch 2.6 only.
+- Power-capped GPU, one device type: results may not transfer to uncapped or HBM parts. Triton fp8 accumulation on sm_89 is reduced precision (round 3), so fp8 comparisons are speed-only.
+
+## Not done
+70B shapes (skipped at your request), the ncu predicted-vs-measured subset (blocked), nvMatmulHeuristics (not wired in), the tritonBLAS-style baseline (Step 3), the dynamic-M curves and the extended-oracle comparison for M > 32, and the "disable" path of `inductor` and the table writer are untested on a second GPU. `results/summary.md` and two plots (`plots/r5_ratio_per_shape.png`, `plots/r5_tuning_time.png`) were generated; a dynamic-M plot was not.
+
+## One honest headline sentence for Dec 3
+"On Llama 3 8B GEMMs on an RTX 6000 Ada, a zero-benchmark model-picked Triton config matches Inductor max-autotune on bf16 (0.96x geomean, worst shape 1.08x) at 0.36x its tuning time, and on fp8 matches it on average (1.03x) at 0.1x the tuning time, but it still picks badly (up to 1.8x slower) on five small-batch fp8 shapes, and the traffic model underneath has not yet been re-validated against hardware counters."
+
+---
+# Follow-ups (requested 2026-11-20; updated as each result comes in)
+
+### F1b. Interleaved rerun of the five worst bf16 naive shapes (same process, 5 reps, ours-M3 / ours-naive / stock paired): DONE
+The 2.12x vs 1.08x comparison above came from two different runs, so I reran the worst shape and the next four with M3, naive and stock measured interleaved in the same run (`results/naive_interleaved*.csv`; ratios are medians over 5 reps).
+
+| shape (bf16) | M3 / stock | naive / stock | naive / M3 |
+|---|---|---|---|
+| `gate_up` M=32 | 1.065 | **2.079** | 1.95 |
+| `gate_up` M=16 | 1.001 | 1.102 | 1.10 |
+| `o` M=512 | 0.993 | 1.025 | 1.03 |
+| `o` M=32 | 1.028 | 1.032 | 1.00 |
+| `down` M=512 | 1.023 | 1.017 | 0.99 |
+
+The big gap holds up without clock differences: on `gate_up` M=32, naive picks 64x128x32 (1 stage) and is 1.95x slower than M3's 32x32x64 (1 stage), same process and same-run stock reference. On the other four shapes the difference is within 3% except `gate_up` M=16 (10%). So the L2/traffic model matters mainly where the naive formula mis-ranks a small-M shape, which is a few shapes, not a broad average gain. (Note: SM clocks within a run still differ between kernels, e.g. 1425 vs 2385 MHz on `down` M=512, because different kernels hit the power cap differently; that is part of the sustained behaviour being measured.)
+
+## F2. L2_eff sensitivity, selection part (offline, no GPU): DONE
+Same time model, L2_eff = 58 MiB vs 102 MiB, top-1 pick per shape.
+- Llama 3 8B validation shapes (32 per dtype, 64 total): **0 of 64 top-1 picks change.**
+- Wider grid (8B, 70B TP=1, 70B TP=8; 14 M values 1..8192; bf16+fp8; 336 shapes): **1 of 336 changes** (70B `gate_up` fp8 M=128).
+- Meaning: on these shapes the choice of L2_eff in 58-102 MiB hardly matters to the ranking, so the unresolved 55-58 vs 102 MiB disagreement does not threaten the validation numbers. It could still matter for much larger shapes or a GPU with a different L2. (Timing of the changed pick not done; it is outside the validation set.)
+- **Timing-probe repeat (3 more runs: 2 on GPU 0, 1 on GPU 1, fresh process each): the knee is stable.** Sequential 57.4 / 57.1 / 57.1 MiB (original 57.7), strided 54.6 / 54.6 / 54.1 MiB (original 54.6); HBM 797 GB/s and L2 4.0-4.2 TB/s the same on both GPUs. So 55-58 MiB is a reproducible property of this probe, not noise, and the disagreement with the round-1 102 MiB is real. What it does not settle: the probe measures time, and its curve rises smoothly (second-pass extra cost 0.30 at 48 MiB, 0.52 at 64, 0.78 at 88, 0.86 at 104 MiB) instead of showing a sharp knee, so a hit still costs measurable time and the "halfway" point is a convention. Round 1 counted DRAM misses (counter-based) and saw none up to 88 MiB. Both can be true; only the ncu probe (blocked) can tell. Per F2 above, the choice does not change selections on these shapes.
+
+## F1. Ablation: naive per-tile traffic instead of M3 (time model otherwise identical): DONE
+Naive traffic = M*N*K*s*(1/BM+1/BN) (no L2 reuse), floored at compulsory bytes (env `LALA_TRITON_TRAFFIC=naive`). Same 8B validation shapes, ours-top-1 through real Inductor, each ratio is vs stock max-autotune. Naive was timed in its own run (paired with stock max-autotune inside that run); the M3 numbers are the earlier validation run, so clocks differ between the two (script `eval/analyze_ablation.py`, `results/ablation_naive*.{json,csv}`).
+
+| | bf16 M3 | bf16 naive | fp8 M3 | fp8 naive |
+|---|---|---|---|---|
+| geomean vs stock max-autotune | 0.958 | 0.971 | 1.026 | 1.010 |
+| worst shape | 1.083 | **2.12** (`gate_up` M=32) | 1.834 | 1.824 (`gate_up` M=1) |
+| shapes within 3% of stock | 97% | 88% | 66% | 69% |
+| picks that differ from M3 | | 26 of 32 | | 21 of 32 |
+
+Plain reading: **the L2 model buys robustness for bf16, not average speed.** Without it bf16 loses 1.3 points of geomean but gets one shape 2.1x slower; M3 keeps the worst case to 1.08. For fp8 the naive model is not worse (geomean 1.010 vs 1.026 is within what I would call run-to-run noise, and both have the same 1.8x failure on `gate_up` M=1, which is the tie problem, not a traffic problem). So I cannot claim M3 is responsible for the fp8 result. Caveats: single run per variant; different clocks between the two runs; the count of differing picks (26/21) is by string compare and is a bit higher than the offline count (22/21) so some of it may be formatting rather than a different tile.
+
+## F3. fp8 tie-break (Amendment 5b): fresh-set result is a FAIL for fp8, so it stays OFF; bf16 unaffected
+Fresh held-out set: Llama 3 70B TP=8 shards, 64 shapes (32 per dtype), 3 interleaved reps, each ratio vs stock max-autotune; oracle for M<=32 only (`results/fresh70b_tp8_*`, `eval/analyze_fresh.py`). Rule frozen in `PREREGISTRATION.md` Amendment 5b before the run.
+
+| | bf16 plain | bf16 tie-break | fp8 plain | fp8 tie-break |
+|---|---|---|---|---|
+| (i) geomean vs stock (<= 1.03) | 0.967 PASS | 0.967 PASS | 1.078 **FAIL** | 1.051 **FAIL** |
+| (ii) worst shape (<= 1.15) | 1.096 PASS | 1.095 PASS | 1.80 (`o` M=1) **FAIL** | 1.58 (`qkv` M=128) **FAIL** |
+| (iii) M<=32 vs oracle (<= 1.10 on all) | 1.03 PASS | 1.05 PASS | 1.80 (11 of 16 ok) **FAIL** | 1.53 (13 of 16 ok) **FAIL** |
+| picks changed by tie-break | | 11 of 32 | | 14 of 32 |
+
+- **What the tie-break did:** on fp8 it helped where it was designed to: `gate_up` M=8/16/32 went from 1.07/1.07/1.23 to 1.00/1.00/1.07 (vs stock), `down` M=32 1.12 to 1.05, geomean 1.078 to 1.051, worst 1.80 to 1.58. On bf16 it is neutral (one near-tie shape slightly worse vs oracle, 1.03 to 1.05; all criteria still pass).
+- **What it did not fix, i.e. why fp8 still fails:** (a) **M=1 on every GEMM**: `o` 1.53, `down` 1.27, `qkv` 1.32 (the oracle picks e.g. 16x32x128, 1 stage, 4 warps where we pick 16x32x128, 4 stages, 2 warps; so "more bytes in flight" is not the right preference at M=1: it picked a deeper pipeline and fewer warps than the oracle). (b) **`qkv` (N=1280) at M=128/2048/8192: 1.58/1.53/1.24**: these are not small-M and not DRAM ties; the model's pick is simply wrong there (likely wave quantization, since 1280 columns give few tiles). The tie-break does not touch these, and I have not diagnosed (b) further.
+- **Decision rule applied:** Amendment 5b says the tie-break becomes default only if it passes (i)-(iii) on the fresh set; it does not for fp8, so it stays **off** (`LALA_TRITON_TIEBREAK=1` opts in). No second tweak on these shapes (needs Amendment 5c and another fresh set). bf16 passes everything on the fresh set with either selector, which is the stronger bf16 evidence: it now holds on two shape families (8B on 1 GPU shard, 70B TP=8).
+- Net status of the headline: bf16 claim holds on 8B and on 70B TP=8; the fp8 claim does not (average 1.03 on 8B but 1.08 on 70B shards, worst 1.8x in both).
+
+
+## F4. Dynamic-M plots (from existing data, no new timing): DONE
+`eval/plot_dynamic_m.py` -> `plots/r5_dynamic_M_measured.png`, `plots/r5_dynamic_M_buckets_predicted.png`.
+- **Measured (Llama 3 8B validation run):** time relative to the best measured method at each M (oracle where it exists, M<=32; otherwise the best of ours / stock max-autotune / cuBLAS, so the "best" is only as good as those three). Ours is flat at ~1.0 for bf16 at every M; stock max-autotune has spikes (up to 1.4x at `qkv`/`gate_up`/`down` around M=128-512); cuBLAS is up to 1.6x at large M. For fp8 the plot shows the known failure (`gate_up` at M<=32, up to 1.83x) and ours also spikes at M=512 (1.35x `qkv`, 1.17x `gate_up`).
+- **Buckets are model-predicted, not timed** (a bucketed table cannot be timed from the data I already have: only 8 M values were measured). The prediction says a power-of-two bucket costs ~0% over exact per-M configs everywhere except `gate_up` at M of about 192 and 384 (up to 1.39x bf16, 1.25x fp8). Treat this as a hint to time those M values, not a result; much of the flatness may come from the model's many near-ties.
+
+## F5a. Energy: kernel energy per GEMM, ours top-1 vs stock max-autotune: DONE
+NVML total-energy counter (`nvmlDeviceGetTotalEnergyConsumption`, whole GPU) over the timed window divided by GEMMs in it; fresh run of both methods on the 64 Llama 3 8B validation shapes, 3 interleaved reps, median (`results/energy_val_s*.csv`, `eval/analyze_energy.py`, `results/energy_validation_per_shape.csv`). This run also replicates the runtime numbers: geomean time ratio 0.960 (bf16) and 1.025 (fp8) vs 0.958/1.026 in the first validation run.
+
+| | bf16 | fp8 |
+|---|---|---|
+| geomean energy ratio ours / stock | **0.971** | **1.027** |
+| geomean time ratio ours / stock | 0.960 | 1.025 |
+| median power, ours / stock | 297 / 294 W | 296 / 297 W |
+| worst-shape energy ratio | 1.10 (`qkv` M=8) | 1.71 (`gate_up` M=1; time ratio 1.83) |
+| shapes where energy ratio differs from time ratio by >5% | 9 of 32 | 4 of 32 |
+
+- As expected on a 300 W-capped card, power sits at 290-315 W for almost every kernel, so energy follows runtime: the geomeans agree to within about 1 point, and energy is at most ~10% off the runtime ratio on any shape.
+- **Where it does not track (13 of 64 shapes beyond 5%):** all within -6% to +10% of the time ratio and in mixed directions (e.g. bf16 `down` M=16/32 time ratio 1.00 but energy 1.07; `down` M=8 and 512 energy 0.95 at equal time), i.e. the two methods run the same-speed kernels at slightly different power (268-313 W). My reading is that this is power-cap/clock jitter plus per-kernel power differences; I did not verify the cause. One notable case: fp8 `gate_up` M=1, where our slow pick draws less power than stock (291 vs 311 W), so energy is 1.71x rather than 1.83x. Nothing is cheaper in energy than in time by a meaningful margin, and no shape is much worse in energy than in time.
+
+## F5b. Energy: GPU energy spent on tuning + compile, and decoder-layer energy: DONE
+Same NVML counter, read around the first call in a fresh process with fresh caches (so it includes compile, benchmarking and the first run; **GPU only**: CPU energy during compile is not counted, which flatters every method that compiles a lot). `results/tuning_time_energy.csv` (64 runs: 16 per method) and `results/e2e_energy.json`. I also tried to subtract an idle baseline, but my idle readings were unreliable (28 to 135 W between processes, probably residual from the previous process), so the table gives **total** energy and mean power, not "energy above idle".
+
+Per GEMM, median first call (Llama 3 8B shapes, M in {32, 2048}):
+| | bf16 energy (J) | bf16 time (s) | fp8 energy (J) | fp8 time (s) |
+|---|---|---|---|---|
+| ours top-1 | 231 | 2.3 | 70 | 2.4 |
+| ours top-5 | 308 | 3.8 | 129 | 4.0 |
+| stock max-autotune | 401 | 6.5 | 771 | 25.0 |
+| Inductor default | 225 | 2.1 | 53 | 1.9 |
+
+So top-1 spends 0.58x (bf16) and **0.09x (fp8)** of stock max-autotune's tuning energy, about the same ratios as for time. Mean GPU power during tuning is only 54-139 W (the GPU is mostly waiting on CPU compile), so tuning energy is mostly time x low power, not heavy GPU work; that is why energy follows time here too.
+
+Llama 3 8B decoder layer, bf16, five shapes, fresh caches per method (single run each; first-call energy summed over the 5 shapes):
+| | tuning+compile time | GPU energy during tuning+compile | |
+|---|---|---|---|
+| stock max-autotune | 93.0 s | 17,055 J | 1x |
+| ours top-1 | 23.1 s | 3,847 J | 0.23x |
+| default | 4.5 s | 607 J | 0.04x |
+
+Layer energy per forward pass, sustained (mJ; latency ms in brackets): prefill 512: stock 590 (2.02), ours 580 (1.97), default 723 (2.46); prefill 2048: stock 2439 (8.01), ours 2136 (7.11), default 2796 (9.41); decode b=1: 154 (0.523) / 159 (0.522) / 156; b=8: 240 / 250 / 251; b=32: 582 (1.96) / 581 (1.99) / 602. Energy tracks latency in every case (about 300 W throughout the prefill cases, 295-305 at 2048), the one place it does not is that the latency ordering and energy ordering swap by a few percent at decode b=1/8 (ours +3% energy at equal latency; within the power jitter seen in F5a). **The 2048-token prefill advantage (ours 11% faster, 12% lower energy than stock) reproduced in this second independent run** (the first run showed 6%), still one rep per run, and still with different SM clocks (1320 vs 960 MHz) which are part of what the sustained protocol measures but also mean I cannot separate "better tile" from "tile that draws less power per FLOP".
+

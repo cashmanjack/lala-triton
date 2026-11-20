@@ -1,0 +1,22 @@
+# caches, logs, virtualenvs, build artifacts
+.triton_cache/
+.inductor_cache*/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv*/
+venv/
+*.egg-info/
+build/
+dist/
+logs/
+nohup.out
+*.log
+# raw / large intermediates (summary CSVs, JSON and plots stay)
+runs/*.tmp
+*.nsys-rep
+*.ncu-rep
+*.sqlite
+tables/
+# voided run kept locally only
+results/validation_INVALID_*

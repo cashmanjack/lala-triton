@@ -1,0 +1,34 @@
+{
+ "bf16": {
+  "n": 32,
+  "geomean_ours1_vs_ind_auto": 0.958466202144574,
+  "max_ratio": 1.0830384572327243,
+  "worst_shape": "['gate_up', 32]",
+  "geomean_ours5_vs_ind_auto": 0.9535797141698188,
+  "geomean_ours1_vs_cublas": 0.8897054240394511,
+  "geomean_ours1_vs_ind_default": 0.889529874353208,
+  "small_M_n": 16,
+  "small_M_max_vs_oracle": 1.0818711888834516,
+  "small_M_frac_le_1p10": 1.0,
+  "small_M_worst": "['gate_up', 32]",
+  "PASS_geomean_le_1.03": true,
+  "PASS_max_le_1.15": true,
+  "PASS_smallM_all_le_1.10": true
+ },
+ "fp8": {
+  "n": 32,
+  "geomean_ours1_vs_ind_auto": 1.025592381677257,
+  "max_ratio": 1.8341962516541046,
+  "worst_shape": "['gate_up', 1]",
+  "geomean_ours5_vs_ind_auto": 1.021656186527709,
+  "geomean_ours1_vs_cublas": 0.9448723709436851,
+  "geomean_ours1_vs_ind_default": 0.9457289441862424,
+  "small_M_n": 16,
+  "small_M_max_vs_oracle": 1.8121055985451535,
+  "small_M_frac_le_1p10": 0.6875,
+  "small_M_worst": "['gate_up', 1]",
+  "PASS_geomean_le_1.03": true,
+  "PASS_max_le_1.15": false,
+  "PASS_smallM_all_le_1.10": false
+ }
+}

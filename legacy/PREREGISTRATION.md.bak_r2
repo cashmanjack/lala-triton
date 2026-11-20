@@ -1,0 +1,200 @@
+# Pre-registration: asymptotic L2 locality for Triton tile selection
+
+Written: 2026-10-15 ~16:50 local, **before** any calibration, ncu sweep, or timing data was collected.
+Any later amendment is appended below with its own timestamp and a reason. Nothing above the amendment line changes.
+
+## Platform (from Phase 0 inventory, env/inventory.json)
+- 2x NVIDIA RTX 6000 Ada (AD102, sm_89), 142 SMs, 96 MiB nominal L2, 99 KiB max SMEM/block, GDDR6 384-bit at 10 Gbps (960 GB/s nominal).
+- Triton 3.2.0, PyTorch 2.6.0+cu124, driver 580.178.04, ncu 2024.1.1. Counters permitted.
+- Clocks can't be locked (no root), so clocks and temperature are logged per row.
+- The spec was written with H100 in mind. On this part, W is about 142 (not 264) and the L2 is 96 MiB (not 50 MB). The hypotheses and thresholds below are unchanged from the spec; only the platform numbers differ.
+- GPU0 is used for all timing, including eff calibration. GPU1 is used for ncu byte counts, which don't depend on timing. Exception: if Phase 3 timing exceeds budget, whole shapes may be moved to GPU1. Regret is computed within a shape, so this is safe, and it will be logged per row.
+- Published peak (spec sheet): bf16 dense 364.2 TFLOPS, fp8 dense 728.5 TFLOPS. Ridge = peak / measured HBM_BW (Phase 1).
+
+## Calibration rules (Phase 1)
+- **L2_eff**: one kernel reads a buffer of size S twice (each CTA re-reads its own chunk), grid = all SMs, measured with `--cache-control all`. Second-pass miss fraction = (dram_read - S) / S.
+  - Knee = the S at which the miss fraction crosses 0.5, by log-linear interpolation.
+  - Two variants: sequential, and strided (prime-stride 128 B segments).
+  - **L2_eff = min(knee_seq, knee_strided)**, fixed before Phase 2 and never refit.
+- **HBM_BW** = streaming copy bandwidth (read + write bytes / time) on a 2 GiB buffer, median of do_bench. Read-only bandwidth is recorded but not used.
+- **L2_BW** = repeated reads of an L2-resident 32 MiB buffer.
+- **eff(config)** = ideal_compute_time / measured time.
+  - ideal = 2MNK / (published peak × occ_share), with the same per-SM accounting as the time model.
+  - G fixed at 8.
+  - Median over the calibration shapes: (8192, 8192, 8192), (16384, 8192, 8192), (8192, 16384, 8192), (12288, 12288, 12288) bf16. For fp8: the same shapes in fp8.
+  - These shapes are excluded from every test set.
+- **Occupancy** `occ` comes from compiled metadata (shared, n_regs, num_warps) against SM limits (100 KiB SMEM/SM, 64K regs, 48 warps, 24 CTAs). Pre-compile SMEM estimates are logged against compiled values.
+
+## Model definitions (fixed now)
+- `W = min(P, 142 * occ)`.
+- Window shape (generalised for the case where a window spans several groups):
+  - `g = min(G, Tm)`, `c = min(Tn, ceil(W / g))`, `r = min(Tm, max(g, W / Tn))` if `c == Tn`, else `r = g`.
+- Footprints: `F2 = (r*BM + c*BN) * K * s`, `F3 = (g*BM + N) * K * s`.
+- Traffic:
+  - A = `M*K*s` if (`F2 <= L2_eff` or `c == Tn`), else `M*K*s * Tn/c`.
+  - B = `N*K*s` if `F3 <= L2_eff`, else `N*K*s * Tm/r`.
+  - The spec's R0 condition is "roughly A+B fits", so also: if `(M+N)*K*s <= L2_eff`, both are compulsory.
+- M1 (naive) uses identical time-model code; only its DRAM bytes = `M*N*K*s*(1/BM + 1/BN)`, i.e. no L2 reuse at all.
+- M2 = `estimate_matmul_time` vendored from triton v3.0.0. It doesn't see GROUP_M, so its ties are broken by a fixed-seed random permutation.
+- M0 = uniform random ranking, seed 0. Its regret is averaged over 100 seeds.
+
+## H1: traffic model validity (Phase 2; ncu `dram__bytes_read.sum`)
+- Data: the K-sweep (M=N=8192, K = 20 log-spaced values in [512, 32768], rounded to a multiple of 128, G in {1,4,8,16,32}) plus the G-sweep, for two configs: 128x128x64/4w/3s, and 128x256x64/8w/3s if it compiles.
+- Error = |pred - meas| / meas on DRAM read bytes. Spearman ρ is computed over all (shape, config, G) points pooled.
+- **Knee definition.** Normalise bytes by compulsory reads `(M+N)*K*s`. For each predicted regime transition, the measured knee is the smallest swept K at which the measured ratio exceeds the geometric mean of the two predicted regime plateau ratios. A transition is "absent" if this never happens within the sweep.
+- **Pass**: median abs % error ≤ 25%, ρ ≥ 0.85, and every predicted knee inside the sweep range has a measured knee within 2x of predicted K\*.
+- **Kill**: ρ < 0.7, or a predicted knee is absent, or one is off by > 4x.
+- Anything in between is reported as "weak/partial".
+- If H1 fails mainly because of the window/dispatch-order assumption (ordering looks right but magnitudes are wrong), the persistent-kernel variant is tested before declaring a kill, as the spec requires.
+
+## H2: relevance (Phase 3)
+- Near-ridge set: shapes whose M3-predicted intensity `2MNK / bytes` (best-M3 config) lies in [0.5, 2] × ridge.
+- Noise floor per shape = (max - min) / median over 10 re-timings of one config.
+- **Pass**: on ≥ 20% of near-ridge shapes, either:
+  - the best G for the oracle-best tile beats G=8 for that tile by ≥ 5% (and by more than the noise floor), or
+  - the oracle-best config's tile differs from the best tile among G=8 configs (with a time gap ≥ 5%).
+- **Kill**: no near-ridge (or any realistic) shape shows a G-induced time difference > noise + 3%.
+- If the near-ridge set is empty, H2 is evaluated on all test shapes and that is stated.
+
+## H3: pruning value (Phase 3)
+- Regret = best-in-top-k time / oracle time (spec writes the inverse; same meaning). k ∈ {1, 3, 5, 10, 20, 5%, 10%}.
+- **Pass**: M3 has regret ≤ 1.05 at k = 10% of feasible configs on ≥ 90% of held-out shapes, **and** M3 beats M1 in one of two ways:
+  - (a) the smallest k at which ≥ 90% of shapes have regret ≤ 1.05 is ≤ half of M1's, or
+  - (b) the mean regret on the near-ridge subset is strictly lower at k = 1, 3, 5, 10 (at least 3 of the 4), with the difference exceeding the mean noise floor.
+- **Kill**: M3 and M1 are within noise, i.e. neither (a) nor (b) holds.
+- Kendall τ is also reported.
+
+## H4 (not a kill criterion)
+- In the R2 G-sweeps, the ncu-measured traffic-minimising G is within one power-of-2 step of `sqrt(W*BN/BM)`.
+
+## Phase 3 protocol
+- Configs: the spec grid, filtered by actual compile success, with no spills and compiled SMEM ≤ 99 KiB.
+- Timing: do_bench(warmup=10, rep=50, return_mode="median"), ≥ 3 independent reps in randomized config order (seed logged).
+- Correctness: max abs error vs fp32 torch reference ≤ 1e-2 × max|ref| + 1e-2 (bf16), or 5e-2 relative for fp8. Failures are discarded and logged.
+- If the budget is exceeded, configs are subsampled uniformly at random (seed logged); shapes are never dropped.
+
+---
+## Amendments
+
+### Amendment 1: 2026-10-15 ~17:45, before any Phase 2/3 data
+1. **Ridge definition.** Both GPUs are hard power-capped at 300 W. Under sustained tensor load, SM clocks are 735–1050 MHz (nvidia-smi: SW Power Cap active) versus 2505 MHz boost, so the published 364 TFLOPS is unreachable.
+   - The H2 near-ridge set now uses the **measured ridge** = (max sustained bf16 TFLOPS over all eff-calibration measurements) / HBM_BW. fp8 is handled the same way.
+   - The published-peak ridge (455 FLOP/B bf16) is reported as a secondary analysis.
+   - eff() still normalises by the published peak; it simply comes out around 0.3.
+2. **SMEM.** Triton 3.2 on sm_89 allocates (num_stages-1) pipeline buffers, so the pre-compile SMEM estimate is `(S-1)*(BM+BN)*BK*s`, not `S*(...)`. This was verified against compiled metadata (exact for bf16). Feasibility uses compiled metadata, as already pre-registered.
+3. **Model code.**
+   - `g = min(G, Tm, W)`. The W term only matters when W < G, which never happens in the test sets; it makes the W=1 unit test well defined.
+   - `knee_K` helper bug fixed before any data: the R0→R1 knee is `L2/((g*BM+N)*s)`.
+4. **Phase 2 shapes**, chosen from the model before measurement:
+   - R1-dominant: (16384,16384,6144), (12288,12288,7168), (6144,16384,8192).
+   - R2-dominant: (8192,8192,32768), (16384,16384,24576), (12288,16384,32768).
+   - Calibration shapes are avoided.
+
+### Amendment 2: 2026-10-16, written before any round-2 data (follow-up spec: power coupling, SOTA baselines, dynamic M)
+**Phase A facts.**
+- Power limit is 300 W enforced, equal to the default and max. SM clock default is 2505 MHz, max 3105.
+- The NVML energy counter works.
+- **Clock locking is not permitted** (no sudo), so the locked-clock arm and H5(3) are skipped.
+- All round-2 timing runs on **GPU0**; GPU1 is used only for ncu and non-timing work.
+
+**Common timing rules.**
+- "Sustained protocol" for a (shape, config):
+  - Run 1 s of warmup, then ≥3 s of back-to-back launches.
+  - Inputs rotate over `n = max(1, ceil(256 MiB / (A+B+C bytes)))` buffer sets, so operands are DRAM-cold as in serving. This replaces do_bench's flush, which would add memset power.
+  - An NVML side thread samples every 20 ms: power, SM/mem clock, temperature, throttle bits 0x4 (SW power cap) and 0x8 (HW slowdown).
+  - The energy counter is read before and after the timed window.
+  - Recorded: time per GEMM (CUDA events over the window / iterations), median SM clock, mean power, energy per GEMM.
+  - Configs are randomised within a shape, with a 2 s idle cooldown before each config, and the starting temperature is logged.
+- **Noise floor.** For tie decisions, round-1 per-shape (max−min)/median is reused; the mean over 42 shapes is 0.092. For Phase B/D/E, a per-shape floor is also measured: the CV of the 3 reps. Differences are paired by rep. 95% CIs are percentile bootstrap (10,000 resamples) over shapes. "Better by more than noise" means the mean paired difference exceeds the noise floor named in the criterion.
+
+**Phase B shape sets (fixed from round-1 data, `runs/r2_shape_classes.csv`).**
+- **G-sensitive (11)**, meaning every round-1 rep showed a ≥5% G effect for the oracle tile:
+  - fp8: 128x4096x4096, 2048x28672x8192, 512x14336x4096, 512x28672x8192, 512x8192x28672, 8192x14336x4096, 8192x4096x14336
+  - bf16: 2048x4096x14336, 512x8192x28672, 8192x14336x4096, 8192x28672x8192
+- **Controls (5)** = the 5 non-sensitive shapes with the smallest round-1 G range:
+  - fp8: 128x4096x14336, 512x4096x4096, 128x14336x4096
+  - bf16: 128x4096x14336, 128x14336x4096
+- **Configs** = the round-1 oracle tile (warps/stages included) × G ∈ {1, 4, 8, 12, 16, 32}. 3 repetitions of the whole shape block.
+- **Power-model calibration runs (for Phase C)**:
+  - Round-1 calibration shapes 8192³ and 16384x8192x8192, bf16 and fp8.
+  - Tiles: 128x128x64_w4_s3, 128x256x64_w8_s3, 64x64x64_w4_s3, 32x128x64_w4_s3 (fp8: BK=128 where feasible, else 64), each with G ∈ {1, 8, 32}.
+  - Same sustained protocol, 1 rep.
+- DRAM bytes per (shape, config) are taken from new ncu runs on GPU1, bytes only, cold L2 as in round 1.
+
+**H5 (power coupling).**
+- (1) For each G-sensitive shape: Spearman ρ between per-config mean sustained SM clock (6 G values) and ncu DRAM read+write bytes. Requirement: median over shapes ≤ −0.5.
+- (2) Explained fraction = `log(clk_bestG/clk_G8) / log(t_G8/t_bestG)`. bestG is the **round-1 bestG** (independent data, which avoids selection bias), using sustained means over reps. Requirement: median over shapes ≥ 0.5. Shapes where bestG = 8, or where t_G8/t_bestG ≤ 1 (no sustained speedup), are reported and excluded from (2). Their count is reported.
+- (3) Skipped: no clock locking.
+- **PASS** = (1) and (2). **KILL** = median ρ > −0.2 or median explained fraction < 0.25. Anything else = PARTIAL.
+
+**H6 (energy, descriptive).** Energy per GEMM at round-1 bestG vs G=8, paired by rep.
+- PASS if ≥5% lower on ≥50% of G-sensitive shapes (using rep means), and a Wilcoxon signed-rank test on all (shape, rep) paired log-ratios has p < 0.05.
+
+**Phase C: M4.**
+- Power model: `P = P0 + α_dtype·FLOP/T + β·Bytes/T`, fit by OLS only on the power-calibration runs plus the Phase B control shapes. Bytes = ncu DRAM read+write for those runs.
+- `T_power = (α·FLOP + β·Bytes)/(P_cap − P0)`, with `P_cap = 300 W`.
+- `T_comp = M3 compute term with the clock de-throttled`: eff_nt(tile) = median over calibration shapes of `eff × 2505/sm_clk_logged` (round-1 per-row clock).
+- `T_dram = M3 bytes/HBM_BW`; T_l2 is kept as in M3.
+- `T = max(T_power, T_comp, T_dram, T_l2) + launch`, with bytes from the M3 traffic model.
+- **H3'**:
+  - Evaluated on the round-1 42-shape timing table (the medians already used).
+  - PASS if mean regret of M4 is lower than "M1 with G=8" by more than 0.092 (round-1 mean noise floor) at both k=1 and k=3, and by ≥ 0.05 at k=1. A 95% bootstrap CI is reported.
+  - Otherwise M4 is "no better", and Phases D/E use whichever of M3/M4 has the lower mean k=1 regret on the 42 round-1 shapes (decided by this rule, not by later data).
+
+**Phase D: baselines (H7).**
+- **Shapes**:
+  - The 42 round-1 shapes in their round-1 layouts. bf16 is A@B with B row-major. fp8 was already K-major B, i.e. the A@B.T layout.
+  - Plus the 20 bf16 LLM shapes in A@B.T layout (B stored [N,K] contiguous).
+  - fp8 has no separate A@B variant: Triton fp8 on sm_89 used the K-major layout in round 1.
+- **B1**: `torch.matmul` for bf16. For fp8, `torch._scaled_mm` with unit scales and fp16 output if supported on sm_89; otherwise B1-fp8 is skipped.
+- **B2**:
+  - Inductor `max-autotune-no-cudagraphs` with `max_autotune_gemm_backends="ATEN,TRITON"`, a fresh cache dir per shape, and a recorded wall time for the first call (tuning + compile).
+  - The picked kernel is identified from the autotune log/profiler.
+  - fp8 B2 only if Inductor autotunes `_scaled_mm` with Triton on sm_89; otherwise skipped and stated.
+- **B3**: triton.autotune over the vendored tutorial's 16-config CUDA list (our kernel, same layout); its pick is recorded.
+- **B4**: the round-1 exhaustive oracle config (A@B layouts and fp8). For the new A@B.T bf16 shapes no exhaustive sweep is run. B4 there is a **pseudo-oracle** = the best of the union of all configs benchmarked by any method for that shape, labelled as such.
+- **Ours**:
+  - Model top-k (k=1,3,5), compiled and benchmarked with do_bench(warmup=5, rep=20); the best is picked. Tuning cost is recorded.
+  - eff is reused from round 1 (not recalibrated for the B.T layout). This is a stated threat.
+- **Evaluation**: every method's pick is re-timed on GPU0, interleaved in random order within a shape, 3 reps, with the sustained protocol. Phase D/E use a shortened window: warmup 0.5 s, measurement max(1.5 s, 2 × Phase B median clock-settling time), cooldown 1 s.
+- **H7**:
+  - PASS if Ours(top-5) is ≥ B2 within noise (t_ours/t_B2 ≤ 1 + max(0.03, per-shape rep CV)) on ≥70% of shapes, **and** ≥5% faster than B2 on ≥20% of shapes, **and** Ours' tuning wall time ≤ 1/5 of B2's (median over shapes).
+  - KILL if B2 is within noise of B4 on ≥80% of shapes.
+  - Comparison to cuBLAS is descriptive.
+
+**Phase E: dynamic M (H8).**
+- (N, K) pairs, all A@B.T bf16: (4096, 4096), (14336, 4096), (4096, 14336).
+- M grid as in the spec, 21 values.
+- Tuning measurements use do_bench(warmup=5, rep=10), 1 rep:
+  - (a) Static = exhaustive tuning over all feasible bf16 configs at M=512.
+  - (b) Buckets {1–16, 17–128, 129–1024, 1025+}, each exhaustively tuned at midpoints M = 8, 72, 576, 4608.
+  - (c) Model top-1 per M, with no benchmarking.
+  - (d) Per-M oracle over a **restricted set**: the union of model top-50 at that M, the (a)/(b) picks, and 150 uniformly random feasible configs (seed 0).
+  - (e) Inductor with dynamic=True, if it works; otherwise skipped.
+- Final times: every pick at every M is re-timed with do_bench(warmup=25, rep=100, L2 flushed), median of 3 interleaved reps.
+- **H8** PASS if `(t_b − t_c)/(t_b − t_d) ≥ 0.5` (using geomean over M) on ≥2 of 3 pairs. If t_b ≤ t_d (no gap), that pair counts as N/A.
+
+**Phase G: soft knee.**
+- Replace the hard thresholds with the round-1 Phase-1 sequential miss curve, `miss(F/L2_eff)`, by log-linear interpolation (0 below the curve, 1 above).
+  - A traffic = `A0·(1 + (Tn/c − 1)·miss(F2/L2))`.
+  - B traffic = `B0·(1 + (Tm/r − 1)·miss(F3/L2))`.
+  - The "A+B fits" override is kept.
+- PASS if the worst-case abs error on Phase-2 + Phase-3-subset points with F2 or F3 within ±10% of L2_eff drops ≥2× vs hard M3, and overall median error ≤7%.
+- Soft M3 is **not** substituted into Phases C/D/E: those were frozen before Phase G.
+
+### Amendment 2b: 2026-10-16, before any nvMatmulHeuristics (NVMMH) metric or timing data
+- NVMMH 0.1.0.27 (pip) is used with target TRITON, hardware descriptor RTX_6000_ADA, and flag PERF_MODEL_BASED_AUTO_TUNING, with its internal discovery set loaded implicitly.
+  - Precision strings: bf16 = "TST"; fp8 = "QQHSH".
+  - Layout strings: A@B = NN_ROW_MAJOR; A@B.T and fp8 = NT_ROW_MAJOR.
+- Its Python wrapper segfaults in `estimateSiliconMetric`: it passes the target enum where the C API expects a backend handle. Metrics are therefore obtained by calling the documented C function `nvMatmulHeuristicsEstimateSiliconMetricEx` with a TRITON backend handle. Nothing else is changed.
+- **Config mapping, ours → NVMMH** (for its byte and L2 predictions on our configs):
+  - cta = (BM, BN, BK), loadStages = num_stages.
+  - Warp tile = (BM/2, BN/2) for 4 warps and (BM/2, BN/4) for 8 warps; instruction tile 16x8x16 (fp8: 16x8x32).
+  - G=1 → (swizzle 1, ctaOrder 0); G>1 → (swizzle G, ctaOrder 1, M-fastest).
+- **Config mapping, NVMMH → ours** (for timing its picks):
+  - BM, BN, BK = cta tile; num_stages = loadStages; num_warps = (BM/warpM)·(BN/warpN).
+  - swizzle 1 → G=1; (ctaOrder 1, swizzle s) → G=s; (ctaOrder 0, swizzle > 1) is N-grouping, which our kernel can't express, so that pick is skipped in favour of the next-ranked one.
+  - Configs that fail to compile or spill are skipped the same way.
+  - split-k > 1 is skipped (our kernel has no split-k).
+- **Phase F accuracy comparison** (descriptive): on the round-1 Phase-2 points and the Phase-3 ncu subset, NVMMH `GMEM_LOAD_BYTES` vs ncu `dram__bytes_read.sum`, and NVMMH `L2_HIT_RATE` vs ncu `lts__t_sector_op_read_hit_rate` (Phase 2) or M3's implied hit rate. Median abs % error and Spearman ρ are reported next to M3.
+- **In Phase D**, method "NVMMH-k" (k = 1, 5) = its top mappable configs, benchmarked like Ours-k. It is added to the regret/speedup tables as an additional baseline. H7 is unchanged.
