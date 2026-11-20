@@ -107,3 +107,14 @@ def rank_tiebreak(M, N, K, dtype, layout, prof, space, Gs=(8,), k=None):
     S.sort(key=lambda x: x[:4])
     first = S[0]; out = [(first[2], first[4])] + [x for i, x in enumerate(allr) if i != first[3]]
     return out[:k] if k else out
+
+
+def rank_distinct(M, N, K, dtype, layout, prof, space, Gs=(8,), k=None):
+    """Amendment 5c: top-k distinct tiles, each at its best G (first G wins exact ties)."""
+    out, seen = [], set()
+    for t, c in rank(M, N, K, dtype, layout, prof, space, Gs=Gs):
+        key = (c['BM'], c['BN'], c['BK'], c['num_warps'], c['num_stages'])
+        if key in seen: continue
+        seen.add(key); out.append((t, c))
+        if k and len(out) >= k: break
+    return out

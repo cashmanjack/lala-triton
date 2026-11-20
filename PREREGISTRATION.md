@@ -294,3 +294,21 @@ Reported side by side: plain argmin (Amendment 5 selector) and tie-break selecto
 a bf16 regression on the fresh set counts against it. The 8B shapes are re-run only as a labelled non-held-out diagnostic.
 **Decision rule.** The tie-break becomes the default only if it passes (i)-(iii) on the fresh set for the dtypes where it is enabled; otherwise it stays off
 and the failure is reported. No second tweak of epsilon/keys on these shapes: a further change needs Amendment 5c and another fresh set.
+
+### Amendment 5c: 2026-11-20, before any data on the new shapes (top-k = k distinct tiles)
+**Why.** The documented fallback "benchmark top 5 for M <= 32" changed almost nothing in R5-V (fp8 worst stayed 1.81), because the model's top 5 were the same
+tile at G in {8,16,32,4,1}: nothing different for Inductor to try. (Diagnosis post hoc, on seen shapes.)
+**Rule (frozen).** For k > 1, `select`/Inductor top-k returns the k best **distinct tiles** (distinct (BM,BN,BK,num_warps,num_stages)), each at its best G
+(lowest predicted time; exact ties resolve to the first G in (8,16,32,4,1)), ordered by predicted time. k = 1 is unchanged (so top-1 results are identical).
+The 5b tie-break stays OFF for this validation (plain argmin ranking). Implemented behind `LALA_TRITON_DISTINCT=1` / `select_scored(..., distinct=True)`,
+default OFF until validated.
+**Fresh held-out set (never used for calibration, for the 5b rule, or for choosing this rule).** Qwen 2.5 7B linear layers
+(hidden 3584, intermediate 18944, 28 heads, 4 KV heads, head_dim 128; biases ignored): (N,K) in {qkv (4608,3584), o (3584,3584), gate_up (37888,3584), down (3584,18944)},
+M in {1, 8, 32, 128, 512, 2048, 8192}: 28 shapes per dtype. fp8 is the primary test; bf16 is run too and reported with the same criteria as a regression check.
+(Mistral 7B was rejected: its linear shapes are identical to Llama 3 8B's, which are already seen.)
+**Methods, same run, 3 interleaved reps, medians:** ours top-5 distinct (new), ours top-5 variants (the old rule), ours top-1, real Inductor max-autotune (ATEN,TRITON),
+restricted per-M oracle for M <= 32 (model top-20 U 5 distinct U 100 random, seed 5, G=8, sustained).
+**Criteria for the new top-5 (R5-V form):** (i) geomean new-top-5 / stock max-autotune <= 1.03; (ii) no shape worse than 1.15; (iii) for M <= 32, within 1.10 of the oracle on every shape.
+Benchmarking cost of the 5 candidates is reported (tuning-time) but not part of the pass/fail. 
+**Decision rule.** Becomes the default for k>1 only if (i)-(iii) all hold for fp8; otherwise stays off and the failure is reported. No re-tuning of k or the rule on these shapes
+(a change needs Amendment 5d and another fresh set). The old top-5 and top-1 on the same shapes are reported side by side.

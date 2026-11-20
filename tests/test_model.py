@@ -53,3 +53,18 @@ def test_tiebreak_rule_5b():
     a = select_scored(8192, 8192, 8192, 'bf16', 'ABT', prof, k=1, tiebreak=False)[0]
     b = select_scored(8192, 8192, 8192, 'bf16', 'ABT', prof, k=1, tiebreak=True)[0]
     assert a == b      # compute-bound: rule inactive
+
+
+def test_distinct_topk_5c():
+    """Amendment 5c: top-k returns k distinct tiles; top-1 identical to plain ranking."""
+    import os
+    from lala_triton.profile import load
+    from lala_triton.select import select_scored
+    p = os.path.join(os.path.dirname(__file__), '..', 'profiles', 'rtx6000ada.json')
+    if not os.path.exists(p): return
+    prof = load(p)
+    r = select_scored(1, 37888, 3584, 'fp8', 'ABT', prof, k=5, distinct=True)
+    keys = {(c['BM'], c['BN'], c['BK'], c['num_warps'], c['num_stages']) for _, c in r}
+    assert len(r) == 5 and len(keys) == 5
+    assert [t for t, _ in r] == sorted(t for t, _ in r)
+    assert r[0] == select_scored(1, 37888, 3584, 'fp8', 'ABT', prof, k=1, distinct=False)[0]

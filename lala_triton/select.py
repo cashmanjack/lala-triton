@@ -23,10 +23,14 @@ def to_inductor(cfg):
 import os
 TIEBREAK = os.environ.get('LALA_TRITON_TIEBREAK', '0') == '1'   # Amendment 5b; default OFF until validated on the fresh held-out set
 
-def select_scored(M, N, K, dtype, layout, profile, k=1, Gs=GS, tiebreak=None):
+DISTINCT = os.environ.get('LALA_TRITON_DISTINCT', '0') == '1'   # Amendment 5c; default OFF until validated
+
+def select_scored(M, N, K, dtype, layout, profile, k=1, Gs=GS, tiebreak=None, distinct=None):
     prof = load_profile(profile) if isinstance(profile, str) else profile
     if TIEBREAK if tiebreak is None else tiebreak:
         return M3.rank_tiebreak(M, N, K, dtype, layout, prof, _space(prof, dtype, layout), Gs=Gs, k=k)
+    if (DISTINCT if distinct is None else distinct) and k and k > 1:
+        return M3.rank_distinct(M, N, K, dtype, layout, prof, _space(prof, dtype, layout), Gs=Gs, k=k)
     return M3.rank(M, N, K, dtype, layout, prof, _space(prof, dtype, layout), Gs=Gs, k=k)
 
 def select(M, N, K, dtype, layout, profile, k=1, Gs=GS):

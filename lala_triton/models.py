@@ -1,6 +1,7 @@
 """Per-layer GEMM shapes (N, K) of dense decoder models; M is the token count. TP=1 shapes (each single GEMM fits on a 48 GB GPU)."""
 MODELS = {
     'llama3-8b':  dict(hidden=4096, inter=14336, heads=32, kv=8, hd=128),
+    'qwen2.5-7b': dict(hidden=3584, inter=18944, heads=28, kv=4, hd=128),
     'llama3-70b': dict(hidden=8192, inter=28672, heads=64, kv=8, hd=128),
 }
 def gemm_shapes(model, tp=1):

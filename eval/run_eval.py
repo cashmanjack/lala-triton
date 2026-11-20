@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from lala_triton.config import ROOT, TRITON_CACHE
 
 M_GRID = [1, 8, 32, 128, 512, 2048, 8192]
-METHODS = ['ours1', 'ours1tb', 'ours1naive', 'ours5', 'ind_auto', 'ind_default', 'cublas', 'nvmm', 'tritonblas', 'oracle']
+METHODS = ['ours1', 'ours5d', 'ours1tb', 'ours1naive', 'ours5', 'ind_auto', 'ind_default', 'cublas', 'nvmm', 'tritonblas', 'oracle']
 ORACLE_SUBSET_M = (8, 128, 2048)
 
 def parse():
@@ -75,6 +75,10 @@ class Bench:
         elif method == 'ours1naive':   # ablation: naive traffic model (flag restored right after compile)
             M3_.TRAFFIC = 'naive'
             fn, ind = self.compiled(dtype, 'max-autotune-no-cudagraphs', 'TRITON', 1)
+        elif method == 'ours5d':       # Amendment 5c: top-5 distinct tiles (flag restored right after compile)
+            from lala_triton import select as S
+            S.DISTINCT = True
+            fn, ind = self.compiled(dtype, 'max-autotune-no-cudagraphs', 'TRITON', 5)
         elif method in ('ours1', 'ours5'): fn, ind = self.compiled(dtype, 'max-autotune-no-cudagraphs', 'TRITON', 1 if method == 'ours1' else 5)
         elif method == 'ind_auto': fn, ind = self.compiled(dtype, 'max-autotune-no-cudagraphs', 'ATEN,TRITON')
         elif method == 'ind_default': fn, ind = self.compiled(dtype, 'default', 'ATEN')
@@ -87,6 +91,8 @@ class Bench:
             if method == 'ours1tb':
                 from lala_triton import select as S; S.TIEBREAK = False
             if method == 'ours1naive': M3_.TRAFFIC = 'm3'
+            if method == 'ours5d':
+                from lala_triton import select as S; S.DISTINCT = False
         info['first_call_s'] = time.time() - t0
         info['autotune'] = ' | '.join(self.autolog)[:2000]
         m = re.search(r'BLOCK_M=(\d+).*?BLOCK_N=(\d+).*?BLOCK_K=(\d+)', ' '.join(l for l in self.autolog if 'BLOCK_M' in l))
@@ -99,7 +105,8 @@ def oracle_cfg(bench, sh, M, N, K, dtype, gpu, rng_seed=5):
     from lala_triton import model as M3
     from lala_triton._measure import time_cfg
     cands = [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=20)]
-    cands += [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=5, tiebreak=True)]   # Amendment 5b: tie-break picks always in the oracle pool
+    cands += [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=5, tiebreak=True)]
+    cands += [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=5, distinct=True)]   # Amendment 5c   # Amendment 5b: tie-break picks always in the oracle pool
     sp = _space(bench.prof, dtype, bench.layout); rnd = random.Random(f'{rng_seed}-{M}-{N}-{K}-{dtype}').sample(sp, min(100, len(sp)))
     cands += [dict(BM=t['BM'], BN=t['BN'], BK=t['BK'], G=8, num_warps=t['num_warps'], num_stages=t['num_stages']) for t in rnd]
     seen, best = set(), (1e9, None)
