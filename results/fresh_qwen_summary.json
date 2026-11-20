@@ -1,0 +1,90 @@
+{
+ "bf16": {
+  "ours1": {
+   "n": 28,
+   "geomean": 0.9625802522073552,
+   "worst": 1.0435192801471673,
+   "worst_shape": "['gate_up', 8]",
+   "smallM_worst_vs_oracle": 1.0542679110741067,
+   "smallM_worst_shape": "['down', 32]",
+   "smallM_frac_le_1p10": 1.0,
+   "PASS_i": true,
+   "PASS_ii": true,
+   "PASS_iii": true
+  },
+  "ours5": {
+   "n": 28,
+   "geomean": 0.9581022796894985,
+   "worst": 1.0419768067485542,
+   "worst_shape": "['gate_up', 8]",
+   "smallM_worst_vs_oracle": 1.0400853110655919,
+   "smallM_worst_shape": "['down', 32]",
+   "smallM_frac_le_1p10": 1.0,
+   "PASS_i": true,
+   "PASS_ii": true,
+   "PASS_iii": true
+  },
+  "ours5d": {
+   "n": 28,
+   "geomean": 0.9545588063471758,
+   "worst": 1.0468389529514388,
+   "worst_shape": "['gate_up', 8]",
+   "smallM_worst_vs_oracle": 1.0429489652360817,
+   "smallM_worst_shape": "['gate_up', 8]",
+   "smallM_frac_le_1p10": 1.0,
+   "PASS_i": true,
+   "PASS_ii": true,
+   "PASS_iii": true
+  },
+  "median_first_call_s": {
+   "ind_auto": 4.6737470626831055,
+   "ours1": 0.31738209724426264,
+   "ours5": 1.5635483264923096,
+   "ours5d": 1.9800546169281006
+  }
+ },
+ "fp8": {
+  "ours1": {
+   "n": 28,
+   "geomean": 1.0354902696966681,
+   "worst": 1.5283685225385142,
+   "worst_shape": "['gate_up', 1]",
+   "smallM_worst_vs_oracle": 1.5265801484780481,
+   "smallM_worst_shape": "['gate_up', 1]",
+   "smallM_frac_le_1p10": 0.75,
+   "PASS_i": false,
+   "PASS_ii": false,
+   "PASS_iii": false
+  },
+  "ours5": {
+   "n": 28,
+   "geomean": 1.0202716890518506,
+   "worst": 1.5275009445259995,
+   "worst_shape": "['gate_up', 1]",
+   "smallM_worst_vs_oracle": 1.525713585635625,
+   "smallM_worst_shape": "['gate_up', 1]",
+   "smallM_frac_le_1p10": 0.8333333333333334,
+   "PASS_i": true,
+   "PASS_ii": false,
+   "PASS_iii": false
+  },
+  "ours5d": {
+   "n": 28,
+   "geomean": 0.9935912892081821,
+   "worst": 1.3382441620148429,
+   "worst_shape": "['qkv', 512]",
+   "smallM_worst_vs_oracle": 1.2607622713726907,
+   "smallM_worst_shape": "['o', 1]",
+   "smallM_frac_le_1p10": 0.9166666666666666,
+   "PASS_i": true,
+   "PASS_ii": false,
+   "PASS_iii": false
+  },
+  "median_first_call_s": {
+   "ind_auto": 23.627214312553406,
+   "ours1": 0.33072733879089355,
+   "ours5": 1.6265170574188232,
+   "ours5d": 1.6304690837860107
+  }
+ }
+}

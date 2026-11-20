@@ -68,3 +68,16 @@ def test_distinct_topk_5c():
     assert len(r) == 5 and len(keys) == 5
     assert [t for t, _ in r] == sorted(t for t, _ in r)
     assert r[0] == select_scored(1, 37888, 3584, 'fp8', 'ABT', prof, k=1, distinct=False)[0]
+
+
+def test_tritonblas_style_baseline_returns_profile_tile():
+    import os
+    from lala_triton.profile import load
+    from lala_triton.baselines import tritonblas as TB
+    p = os.path.join(os.path.dirname(__file__), '..', 'profiles', 'rtx6000ada.json')
+    if not os.path.exists(p): return
+    prof = load(p)
+    for dt, (M, N, K) in (('bf16', (1, 6144, 4096)), ('fp8', (2048, 4096, 14336))):
+        c = TB.select(M, N, K, dt, 'ABT', prof)
+        assert f"{c['BM']}x{c['BN']}x{c['BK']}_w{c['num_warps']}_s{c['num_stages']}" in prof['meta'][f'{dt}|ABT']
+        assert c == TB.select(M, N, K, dt, 'ABT', prof)
