@@ -16,7 +16,7 @@ Picks Triton GEMM configs from a traffic model (M3: L2-aware DRAM bytes) plus a 
     python3 -m lala_triton.calibrate --out profiles/<gpu>.json --shard 0/2 --build-only
 Measures HBM and L2 bandwidth, a timing-based L2 knee (sanity check only), and sustained eff for ~1100 tiles on 8192^3 (3 families), then fits the
 Little's-law latency per dtype on small-M calibration shapes. **L2_eff is a constant, not measured**: it defaults to 102 MiB (RTX 6000 Ada, round 1).
-For a new GPU pass `--l2-eff-mib X` (nominal L2 x ~1.0 is a reasonable start: the RTX 6000 Ada has 96 MiB nominal, which `torch.cuda.get_device_properties(0).L2_cache_size` reports, and uses 102 MiB; an L40S has 48 MiB nominal, so start at 48 to 51) and, if ncu counters work, verify with a double-read (`lala_triton/_l2probe.py` under ncu, `dram__bytes_read.sum`).
+For a new GPU pass `--l2-eff-mib X` (nominal L2 x ~1.0 is a reasonable start: the RTX 6000 Ada has 96 MiB nominal, as `torch.cuda.get_device_properties(0).L2_cache_size` reports, and uses 102 MiB; an L40S is the same AD102 die with 96 MiB of L2, so use `--l2-eff-mib 102` there too, and confirm with that same call) and, if ncu counters work, verify with a double-read (`lala_triton/_l2probe.py` under ncu, `dram__bytes_read.sum`).
 Needs NVML (pynvml) for clocks; power-capped GPUs only make sense with the sustained protocol, which is why eff is measured that way.
 
 ## Use
