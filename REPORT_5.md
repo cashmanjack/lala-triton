@@ -36,7 +36,7 @@ Thresholds: `PREREGISTRATION.md` **Amendment 5 / 5a**, written before any round-
 | predicted vs measured, ours top-1 (median abs log error; 189 rows) | 0.108 (about 11%), over-predicts | 0.133 (about 13%) |
 
 - Where ours is >= 5% faster than stock max-autotune: bf16 `qkv`/`gate_up` M=128-512 (up to 0.71), `down` M=128; fp8 `o` M=128/8192, `qkv` M=128/8192, `down` M=128. These are shapes where Inductor's autotuner picks ATen/cuBLAS or a stock tile under burst timing and the sustained ranking differs.
-- Inductor "default" (no autotune) is ATen, i.e. cuBLAS, so it is the same row as cuBLAS (ours/default 0.890 bf16, 0.946 fp8). nvMatmulHeuristics and the tritonBLAS-style baseline were **not run** (see Not done).
+- Inductor "default" (no autotune) is ATen, i.e. cuBLAS, so it is the same row as cuBLAS (ours/default 0.890 bf16, 0.946 fp8). nvMatmulHeuristics was **not run** (see Not done). The tritonBLAS-style baseline was run later (F7).
 - Calibration facts (reimplemented profile `profiles/rtx6000ada.json`): HBM 797 GB/s, L2 about 4.0 TB/s, eff tables for 351 (bf16 AB), 347 (bf16 ABT), 383 (fp8 ABT) feasible tiles, measured on 8192^3 under the sustained protocol (eff 0.04-0.47; the power cap makes them far below 1). The Little's-law latency was fit on calibration small-M shapes only: bf16 2.96 us, fp8 2.41 us. It is a weak fit: RMS log error on those shapes 0.45 (bf16) and 0.56 (fp8), versus 0.69 / 0.78 without the term. So the small-M term helps but is far from exact.
 - Split-K was **not added** (the template check was not done; stated rather than assumed).
 
@@ -83,10 +83,11 @@ Verified in the clean copy: install, tests, table writer (vLLM-style files), qui
 - Power-capped GPU, one device type: results may not transfer to uncapped or HBM parts. Triton fp8 accumulation on sm_89 is reduced precision (round 3), so fp8 comparisons are speed-only.
 
 ## Not done
-70B shapes (skipped at your request), the ncu predicted-vs-measured subset (blocked), nvMatmulHeuristics (not wired in), the tritonBLAS-style baseline (Step 3), the dynamic-M curves and the extended-oracle comparison for M > 32, and the "disable" path of `inductor` and the table writer are untested on a second GPU. `results/summary.md` and two plots (`plots/r5_ratio_per_shape.png`, `plots/r5_tuning_time.png`) were generated; a dynamic-M plot was not.
+Still not done: the ncu predicted-vs-measured subset (gate R5-0, blocked by counter permissions), nvMatmulHeuristics (not wired in), the extended-oracle comparison for M > 32, and the "disable" path of `inductor` and the table writer are untested on a second GPU. The `qkv` fp8 mid-M failures (F3, F6) are undiagnosed.
+Done after the first version of this report (see the follow-ups): Llama 3 70B TP=8 shapes (F3), the tritonBLAS-style baseline (F7, my transcription, not the authors' code), dynamic-M plots (F4; `plots/r5_dynamic_M_*.png`), the naive-traffic ablation (F1), L2_eff sensitivity (F2), energy (F5), and the distinct-tile top-k amendment (F6). `results/summary.md` and the plots `plots/r5_ratio_per_shape.png`, `plots/r5_tuning_time.png` were generated earlier.
 
 ## One honest headline sentence for Dec 3
-"On Llama 3 8B GEMMs on an RTX 6000 Ada, a zero-benchmark model-picked Triton config matches Inductor max-autotune on bf16 (0.96x geomean, worst shape 1.08x) at 0.36x its tuning time, and on fp8 matches it on average (1.03x) at 0.1x the tuning time, but it still picks badly (up to 1.8x slower) on five small-batch fp8 shapes, and the traffic model underneath has not yet been re-validated against hardware counters."
+"On an RTX 6000 Ada, a zero-benchmark model-picked Triton config matches Inductor max-autotune on bf16 across three shape sets (Llama 3 8B 0.96x geomean, worst 1.08x; fresh Llama 3 70B TP=8 shards 0.97x, worst 1.10x; fresh Qwen 2.5 7B 0.96x, worst 1.05x) at about 0.36x its tuning time, and beats a tritonBLAS-style analytical baseline in bf16 by 10-20% (my transcription, not the authors' code); on fp8 it is only average-level (1.03x on 8B, 1.08x on 70B shards) at 0.1x the tuning time and still picks up to 1.8x slower on small-batch shapes, two pre-registered fixes (tie-break 5b, distinct top-k 5c) each failed the fp8 criteria on fresh shapes and stay off, in fp8 the tritonBLAS-style baseline is comparable with different failures, and the traffic model underneath has not been re-validated against hardware counters."
 
 ---
 # Follow-ups (requested 2026-11-20; updated as each result comes in)
