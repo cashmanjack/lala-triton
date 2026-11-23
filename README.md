@@ -6,7 +6,7 @@ Picks Triton GEMM configs from a traffic model (M3: L2-aware DRAM bytes) plus a 
 
 ## Install
     pip install -e . --no-deps          # torch 2.6 + triton 3.2 assumed; set LALA_TRITON_ROOT to relocate runs/ and profiles/
-    python3 -m pytest -p no:anyio tests # 185 model unit tests, no GPU needed
+    python3 -m pytest -p no:anyio tests # 186 model unit tests, no GPU needed
 (If pip reports the package as `UNKNOWN-0.0.0`, your setuptools is older than 61: `pip install -U setuptools`. The editable install still imports fine.)
 
 ## Calibrate a new GPU (about 45 min on 2 GPUs; one GPU: use --shard 0/1, about 80 min)
@@ -28,6 +28,15 @@ k=1: no benchmarking; k=5: Inductor times our 5 picks. Plain Triton: `@triton.au
 Direct: `lala_triton.select.select(M, N, K, 'bf16', 'ABT', profile, k=5)` returns Inductor-format dicts.
 Per-M tables: `python3 -m lala_triton.table --model llama3-8b --profile profiles/rtx6000ada.json --dtype bf16 --out table.json --vllm-dir tables/`.
 Evaluation: `python3 eval/run_eval.py --profile ... --models llama3-8b,llama3-70b --dtypes bf16,fp8 --out results/` (resumable; see its docstring).
+
+## Rerun the fresh Gemma 2 9B set on another GPU (Amendment 5d validation; e.g. Dongyoon's L40S)
+    python3 eval/run_eval.py --profile profiles/<gpu>.json --models gemma2-9b --dtypes bf16,fp8 --ms 1,8,32,128,512,2048,8192 \
+        --methods ind_auto,ours1,ours1pc,ours1tb,ours5d,tritonblas,oracle --oracle-ms 1,8,32 --tag fresh_gemma_<gpu>_s0 --out results --gpu 0
+    python3 eval/analyze_5d.py fresh_gemma_<gpu>      # reads results/fresh_gemma_<gpu>_s*.csv, prints the (i)-(iii) verdicts for ours1 and ours1pc
+56 shapes (28 per dtype), 3 interleaved reps each, about 1 h per GPU on the RTX 6000 Ada (the M <= 32 shapes dominate: ~4 min each because of the oracle search). Resumable. Two GPUs: run the same command twice with `--gpu i --shard i/2 --tag fresh_gemma_<gpu>_s<i>` for i = 0, 1.
+Method names in `--methods`: `ind_auto` stock Inductor max-autotune (ATEN+TRITON); `ours1` plain top-1; `ours1pc` top-1 with **Amendment 5d** (BLOCK_M cap + padded-row charge); `ours1tb` top-1 with the 5b tie-break; **`ours5d` is the Amendment 5c distinct-tile top-5, not 5d** (the name predates 5d); `tritonblas` the tritonBLAS-style baseline; `oracle` the restricted per-M oracle (only at the M values in `--oracle-ms`).
+Turning 5d on outside this harness: environment variable `LALA_TRITON_PADCAP=1` (default off), or `select_scored(..., padcap=True)` for one call. `ours1pc` sets it for you; do not set the env var for this run (it would also change `ours1`, `ours1tb`, `ours5d` and the oracle pools).
+A profile made by the existing calibrate.py works unchanged (5d did not change the profile format or calibration); sanity check: `python3 -c "import lala_triton.profile as p; q=p.load('profiles/<gpu>.json'); print(q['n_sm'], q['l2_eff']/2**20, {k: sum(t.startswith('16x') for t in m) for k, m in q['meta'].items()})"` should print non-zero BM=16 tile counts for `bf16|ABT` and `fp8|ABT` (5d raises an error if none exist).
 
 ## Repository layout
 `lala_triton/` package, `tests/`, `eval/` harness (run_eval, tuning_time, e2e_layer, analyze_*, plot_*), `profiles/` (RTX 6000 Ada profile), `results/` + `plots/` (summary CSVs/plots only),
