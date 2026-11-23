@@ -25,7 +25,12 @@ TIEBREAK = os.environ.get('LALA_TRITON_TIEBREAK', '0') == '1'   # Amendment 5b; 
 
 DISTINCT = os.environ.get('LALA_TRITON_DISTINCT', '0') == '1'   # Amendment 5c; default OFF until validated
 
-def select_scored(M, N, K, dtype, layout, profile, k=1, Gs=GS, tiebreak=None, distinct=None):
+def select_scored(M, N, K, dtype, layout, profile, k=1, Gs=GS, tiebreak=None, distinct=None, padcap=None):
+    """padcap (Amendment 5d): None = module default (env LALA_TRITON_PADCAP), True/False overrides for this call only."""
+    if padcap is not None and padcap != M3.PAD:
+        old = M3.PAD; M3.PAD = padcap
+        try: return select_scored(M, N, K, dtype, layout, profile, k, Gs, tiebreak, distinct)
+        finally: M3.PAD = old
     prof = load_profile(profile) if isinstance(profile, str) else profile
     if TIEBREAK if tiebreak is None else tiebreak:
         return M3.rank_tiebreak(M, N, K, dtype, layout, prof, _space(prof, dtype, layout), Gs=Gs, k=k)

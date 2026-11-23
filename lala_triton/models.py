@@ -3,8 +3,9 @@ MODELS = {
     'llama3-8b':  dict(hidden=4096, inter=14336, heads=32, kv=8, hd=128),
     'qwen2.5-7b': dict(hidden=3584, inter=18944, heads=28, kv=4, hd=128),
     'llama3-70b': dict(hidden=8192, inter=28672, heads=64, kv=8, hd=128),
+    'gemma2-9b':  dict(hidden=3584, inter=14336, heads=16, kv=8, hd=256),   # Amendment 5d fresh set; o-proj K = 16*256 = 4096 != hidden
 }
 def gemm_shapes(model, tp=1):
     c = MODELS[model]; h, i = c['hidden'], c['inter']
     qkv = (c['heads'] + 2 * c['kv']) * c['hd']
-    return {'qkv': (qkv // tp, h), 'o': (h, h // tp), 'gate_up': (2 * i // tp, h), 'down': (h, i // tp)}
+    return {'qkv': (qkv // tp, h), 'o': (h, c['heads'] * c['hd'] // tp), 'gate_up': (2 * i // tp, h), 'down': (h, i // tp)}

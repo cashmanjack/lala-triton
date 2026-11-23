@@ -2,7 +2,7 @@
 
 Picks Triton GEMM configs from a traffic model (M3: L2-aware DRAM bytes) plus a sustained-load time model, with no or little benchmarking.
 **This is a reimplementation**: the round 1-3 model code and data were lost; formulas come from `legacy/triton-locality-killtest.md` Section 2, legacy/REPORT*.md and
-`PREREGISTRATION.md` (Amendments 5/5a/5b/5c). It has not yet been checked against ncu DRAM bytes (counters are blocked on the dev machine; gate R5-0 pending).
+`PREREGISTRATION.md` (Amendments 5/5a/5b/5c/5d). It has not yet been checked against ncu DRAM bytes (counters are blocked on the dev machine; gate R5-0 pending).
 
 ## Install
     pip install -e . --no-deps          # torch 2.6 + triton 3.2 assumed; set LALA_TRITON_ROOT to relocate runs/ and profiles/
@@ -32,7 +32,7 @@ Evaluation: `python3 eval/run_eval.py --profile ... --models llama3-8b,llama3-70
 ## Repository layout
 `lala_triton/` package, `tests/`, `eval/` harness (run_eval, tuning_time, e2e_layer, analyze_*, plot_*), `profiles/` (RTX 6000 Ada profile), `results/` + `plots/` (summary CSVs/plots only),
 `PREREGISTRATION.md` (thresholds written before data), `REPORT_5.md` (results and honest caveats), `legacy/` (round 1-3 one-off scripts and reports, kept for provenance; not maintained, and they hardcode the original machine's paths).
-Opt-in tie-break (Amendment 5b, off by default because it failed on fp8): `LALA_TRITON_TIEBREAK=1`. Opt-in distinct-tile top-k (Amendment 5c, off by default because it failed on fp8): `LALA_TRITON_DISTINCT=1`. Ablation switch: `LALA_TRITON_TRAFFIC=naive`.
+Opt-in tie-break (Amendment 5b, off by default because it failed on fp8): `LALA_TRITON_TIEBREAK=1`. Opt-in distinct-tile top-k (Amendment 5c, off by default because it failed on fp8): `LALA_TRITON_DISTINCT=1`. Opt-in BLOCK_M cap + padded-row charge (Amendment 5d, off by default until validated): `LALA_TRITON_PADCAP=1`. Ablation switch: `LALA_TRITON_TRAFFIC=naive`.
 A tritonBLAS-style baseline (my transcription of arXiv 2512.04226, not the authors' code) is in `lala_triton/baselines/tritonblas.py`; run it with `run_eval.py --methods tritonblas`.
 
 ## Known limitations

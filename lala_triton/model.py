@@ -5,6 +5,7 @@ OUT_ESIZE = {'bf16': 2, 'fp8': 2}
 PEAK = {'bf16': 364.2e12, 'fp8': 728.5e12}
 LAUNCH = 4e-6
 import os
+PAD = os.environ.get('LALA_TRITON_PADCAP', '0') == '1'     # Amendment 5d: BM cap + padded-row A charge; default OFF until validated
 TRAFFIC = os.environ.get('LALA_TRITON_TRAFFIC', 'm3')     # 'm3' (default) or 'naive' (ablation: per-tile traffic, no L2 reuse model)
 
 def tile_key(bm, bn, bk, s, w): return f'{bm}x{bn}x{bk}_w{w}_s{s}'
@@ -26,16 +27,25 @@ def window(M, N, BM, BN, occ, n_sm):
     P = math.ceil(M / BM) * math.ceil(N / BN)
     return P, min(P, n_sm * occ)
 
+def pad_rows(M, BM):
+    """Amendment 5d: rows of A that the Tm = ceil(M/BM) row-tiles actually load/compute (padded to a whole tile)."""
+    return math.ceil(M / BM) * BM
+
+def bm_cap(M):
+    """Amendment 5d: largest BLOCK_M the selector may pick: max(16, next_pow2(M))."""
+    return max(16, 1 << max(0, (M - 1).bit_length()))
+
 def traffic(M, N, K, BM, BN, G, W, s, L2):
-    """DRAM read bytes (A + B) of the grouped-order GEMM. Returns (A, B, info)."""
+    """DRAM read bytes (A + B) of the grouped-order GEMM. Returns (A, B, info).
+    With PAD (Amendment 5d) A0 is charged for the padded rows ceil(M/BM)*BM instead of M (footprints F2/F3 already use whole tiles)."""
     Tm, Tn = math.ceil(M / BM), math.ceil(N / BN)
     g = max(1, min(G, Tm, W))
     c = min(Tn, math.ceil(W / g))
     r = min(Tm, max(g, W / Tn)) if c == Tn else g
     F2 = (r * BM + c * BN) * K * s
     F3 = (g * BM + N) * K * s
-    A0, B0 = M * K * s, N * K * s
-    if (M + N) * K * s <= L2: A, B, reg = A0, B0, 'R0'
+    A0, B0 = (pad_rows(M, BM) if PAD else M) * K * s, N * K * s
+    if A0 + B0 <= L2: A, B, reg = A0, B0, 'R0'
     else:
         A = A0 if (F2 <= L2 or c == Tn) else A0 * Tn / c
         B = B0 if F3 <= L2 else B0 * Tm / r
@@ -59,7 +69,7 @@ def predict(M, N, K, cfg, dtype, prof, layout='ABT', occ=None, eff=None, detail=
     needed = prof['lat'][dtype] * prof['hbm_bw']
     attain = min(1.0, inflight / needed)
     t_dram = nbytes / (prof['hbm_bw'] * attain)
-    t_l2 = (M * K * s * math.ceil(N / BN) + N * K * s * math.ceil(M / BM)) / prof['l2_bw']
+    t_l2 = ((pad_rows(M, BM) if PAD else M) * K * s * math.ceil(N / BN) + N * K * s * math.ceil(M / BM)) / prof['l2_bw']
     t = max(t_comp, t_dram, t_l2) + LAUNCH
     if detail: return t, dict(t_comp=t_comp, t_dram=t_dram, t_l2=t_l2, bytes=nbytes, read=A + B, attain=attain, occ=occ, eff=eff, **info)
     return t
@@ -67,6 +77,10 @@ def predict(M, N, K, cfg, dtype, prof, layout='ABT', occ=None, eff=None, detail=
 def rank(M, N, K, dtype, layout, prof, space, Gs=(8,), k=None):
     """space: iterable of tile dicts (BM,BN,BK,num_warps,num_stages, optional occ). Returns configs sorted by predicted time."""
     out = []
+    if PAD:      # Amendment 5d: cap BLOCK_M during selection
+        cap = bm_cap(M); sub = [t for t in space if t['BM'] <= cap]
+        if not sub: raise ValueError(f'no calibrated tile with BM <= {cap} (M={M})')
+        space = sub
     for t in space:
         for G in Gs:
             cfg = dict(BM=t['BM'], BN=t['BN'], BK=t['BK'], G=G, num_warps=t['num_warps'], num_stages=t['num_stages'])

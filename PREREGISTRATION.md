@@ -312,3 +312,31 @@ restricted per-M oracle for M <= 32 (model top-20 U 5 distinct U 100 random, see
 Benchmarking cost of the 5 candidates is reported (tuning-time) but not part of the pass/fail. 
 **Decision rule.** Becomes the default for k>1 only if (i)-(iii) all hold for fp8; otherwise stays off and the failure is reported. No re-tuning of k or the rule on these shapes
 (a change needs Amendment 5d and another fresh set). The old top-5 and top-1 on the same shapes are reported side by side.
+
+### Amendment 5d: 2026-11-23, before any data on the new shapes (BLOCK_M cap + padded-row charge)
+**Why.** Dongyoon's L40S run (reported to me by the user; the data is not in this repo and is not used for any fit) shows the fp8 small-M roofline tie picking
+BLOCK_M=128 at M=1 and M=8, 7.5x slower on `o` at M=1. Same mechanism as the 5b diagnosis: in the DRAM-bound small-M regime many tiles sit at exactly the roofline, so the
+winner is decided by enumeration order, and a 128-row tile at M=1 loads and multiplies 127 padded rows. The 5b tie-break (OFF, failed fp8 on fresh shapes) only *prefers* small BM
+inside a 2% tie set; 5d instead removes oversized tiles from the candidate set and makes the padding visible to the model. (The L40S is the same AD102 die as our RTX 6000 Ada, 142 SMs.)
+**Rule (frozen text; code must match it exactly). One switch (`LALA_TRITON_PADCAP=1`, `select_scored(..., padcap=True)`), default OFF until validated, covers both parts:**
+1. **BM cap.** Before ranking, drop every candidate tile with BM > max(16, next_pow2(M)). So BM=16 only for M in 1..16, BM <= 32 for M in 17..32, <= 128 for M=128; for M >= 256 the cap
+   does not bind (largest calibrated BM is 256). Applies to all G, both dtypes, top-1 and top-k, and to the Inductor hook (M = the size hint). If no tile survives, raise.
+2. **Padded-row charge.** M_pad = ceil(M/BM)*BM replaces M wherever the model charges A: (a) A0 = M_pad*K*s in `traffic()` (so the R0 compulsory test is A0+B0 and A's DRAM bytes use A0), and
+   (b) the A term of T_l2: M_pad*K*s*ceil(N/BN). **T_comp is unchanged**: it is already ceil(P/142)*2*BM*BN*K per tile, i.e. whole padded tiles (I checked the code before writing this; a unit test asserts the
+   flag does not change T_comp). Output bytes M*N*so, the footprints F2/F3 (already whole tiles) and everything else are unchanged. Stated approximation: Inductor's mm template wraps row indices modulo M, so padded
+   rows re-read real rows (cache hits, not extra DRAM); charging them as DRAM bytes is therefore conservative. It is kept because it is the user-specified model.
+Unchanged: time model otherwise, eff tables, lat constants, L2_eff, the profile file (`profiles/rtx6000ada.json`, sha256 prefix 48bce33124722fbd; no refit), 5b tie-break and 5c distinct top-k (both OFF).
+**What to expect, stated before data so a pass is not over-read.** For every M in the grid (all powers of two) the cap alone removes all padding for M >= 16, and at M=1 and 8 every surviving tile has BM=16, so part 2 can only re-rank
+BM=16 tiles (through the BN-dependent L2 A term and a constant DRAM offset). On this set 5d is therefore mostly the cap; part 2 matters for non-power-of-two M. An offline, untimed diagnostic (picks of plain vs cap-only vs cap+pad on the fresh shapes)
+is reported, computed after this amendment is committed. Also: fp8 has failed (ii)/(iii) on three earlier sets partly for reasons the cap does not touch (e.g. at M=1 the oracle prefers fewer stages and more warps than our BM=16 pick;
+`qkv` mid-M), so a fp8 fail is a live outcome.
+**Fresh held-out set.** Gemma 2 9B linear layers (hidden 3584, intermediate 14336, 16 heads, 8 KV heads, head_dim 256; biases ignored; o-proj K = 16*256 = 4096, not hidden):
+(N,K) in {qkv (8192,3584), o (3584,4096), gate_up (28672,3584), down (3584,14336)}, M in {1, 8, 32, 128, 512, 2048, 8192}, bf16 (A@B.T) and fp8: 28 shapes per dtype, 56 total.
+Never used for calibration or for choosing this rule. Mistral 7B was again rejected (its GEMMs equal Llama 3 8B's). No (N,K) here appears in the calibration set, R5-V (Llama 3 8B), 5b (70B TP=8) or 5c (Qwen 2.5 7B);
+three of four share K=3584 with Qwen 2.5 7B but with different N, so the set is fresh by shape, not unrelated by dimension.
+**Methods, same run, 3 interleaved reps, medians, sustained window 0.5/1.5/1.0 s, 2 GPUs:** ours top-1 plain (Amendment 5 selector), ours top-1 with 5d, real Inductor max-autotune (ATEN,TRITON),
+restricted per-M oracle for M <= 32 (24 shapes): plain top-20 U 5b top-5 U 5c distinct-5 U 5d top-20 U 100 random uncapped tiles (seed 5, G=8), sustained. (The pool is larger than in 5c, so this oracle is no easier to match.)
+**Criteria (R5-V verbatim, per dtype, for ours top-1 with 5d vs stock max-autotune and the oracle):** (i) geomean <= 1.03; (ii) no single shape > 1.15; (iii) every M <= 32 shape within 1.10 of the oracle.
+Plain top-1 is reported side by side on the same run with the same criteria (not a criterion for the decision).
+**Decision rule.** 5d becomes the default only if (i)-(iii) all hold for **both** dtypes (the cap is dtype-agnostic; a bf16 regression counts against it). Otherwise it stays OFF and the failure is reported.
+No second tweak on these shapes: a further change needs Amendment 5e and another fresh set.

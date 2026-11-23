@@ -81,3 +81,31 @@ def test_tritonblas_style_baseline_returns_profile_tile():
         c = TB.select(M, N, K, dt, 'ABT', prof)
         assert f"{c['BM']}x{c['BN']}x{c['BK']}_w{c['num_warps']}_s{c['num_stages']}" in prof['meta'][f'{dt}|ABT']
         assert c == TB.select(M, N, K, dt, 'ABT', prof)
+
+
+def test_bm_cap_and_pad_5d():
+    """Amendment 5d: cap = max(16, next_pow2(M)); padded-row charge; default OFF and a no-op when M is a multiple of BM."""
+    assert [m.bm_cap(x) for x in (1, 8, 16, 17, 32, 33, 128, 512, 3000, 8192)] == [16, 16, 16, 32, 32, 64, 128, 512, 4096, 8192]
+    assert m.pad_rows(1, 128) == 128 and m.pad_rows(8, 16) == 16 and m.pad_rows(128, 64) == 128 and m.pad_rows(100, 64) == 128
+    assert m.PAD is False
+    import os
+    from lala_triton.profile import load
+    from lala_triton.select import select_scored
+    p = os.path.join(os.path.dirname(__file__), '..', 'profiles', 'rtx6000ada.json')
+    if not os.path.exists(p): return
+    prof = load(p)
+    for dt in ('bf16', 'fp8'):
+        for M in (1, 8, 16, 17, 32, 128):
+            for _, c in select_scored(M, 8192, 4096, dt, 'ABT', prof, k=50, padcap=True):
+                assert c['BM'] <= m.bm_cap(M)
+        for M in (512, 2048, 8192):       # cap does not bind (BM <= 256) and every BM divides M: top-1 identical
+            assert select_scored(M, 8192, 4096, dt, 'ABT', prof, k=1, padcap=True) == select_scored(M, 8192, 4096, dt, 'ABT', prof, k=1, padcap=False)
+    assert m.PAD is False                  # per-call override restored the module default
+    # T_comp already charges whole BM x BN tiles, so the flag must not change it; only the A bytes (DRAM and L2) change
+    cfg = dict(BM=128, BN=128, BK=64, G=8, num_warps=4, num_stages=3); occ = 2; eff = 0.3
+    t0, d0 = m.predict(1, 4096, 4096, cfg, 'bf16', PROF, occ=occ, eff=eff, detail=True)
+    m.PAD = True
+    try: t1, d1 = m.predict(1, 4096, 4096, cfg, 'bf16', PROF, occ=occ, eff=eff, detail=True)
+    finally: m.PAD = False
+    assert d1['t_comp'] == d0['t_comp'] and d1['read'] > d0['read'] and d1['t_l2'] > d0['t_l2']
+    assert abs(d1['read'] - d0['read'] - (128 - 1) * 4096 * 2) < 1
