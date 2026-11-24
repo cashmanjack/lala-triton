@@ -20,3 +20,4 @@ runs/*.tmp
 tables/
 # voided run kept locally only
 results/validation_INVALID_*
+.triton_cache_r6/

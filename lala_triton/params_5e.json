@@ -1,28 +1,42 @@
 {
  "bf16": {
-  "L_mem_us": 1.00073017765917,
-  "t0_us": 0.7575352377635949,
-  "depth_max": 2.7063729912604786,
-  "rms_log": 0.38827324848447226,
-  "rms_log_current": 0.7319776355468036,
-  "tau_5e_median": 0.7126916417845048,
-  "tau_current_median": 0.7565742312168715,
-  "pick_over_best_5e_median": 1.1737583677151173,
-  "pick_over_best_5e_worst": 3.106306067000471,
-  "pick_over_best_cur_median": 1.027036026678731,
-  "pick_over_best_cur_worst": 2.0806993875895268
+  "t_iter_us": 4.4,
+  "d_sat": 3.0,
+  "n_shapes": 28,
+  "cur": {
+   "median_pick_enum": 1.027036026678731,
+   "median_pick_tieexp": 1.0259715905225026,
+   "mean_pick_tieexp": 1.0349227781858386,
+   "worst_tieexp": 1.1688993317041683,
+   "tau_nearbest_median": 0.5858142732993414
+  },
+  "new": {
+   "median_pick_enum": 1.0046313344317803,
+   "median_pick_tieexp": 1.008515006037198,
+   "mean_pick_tieexp": 1.018642947608109,
+   "worst_tieexp": 1.1052249756220516,
+   "tau_nearbest_median": 0.6920042205297985
+  },
+  "beats_current": true
  },
  "fp8": {
-  "L_mem_us": 0.8473037535786098,
-  "t0_us": 0.6620317025754362,
-  "depth_max": 2.1373533850186894,
-  "rms_log": 0.45012784221265895,
-  "rms_log_current": 0.7692288049330377,
-  "tau_5e_median": 0.7926708589026208,
-  "tau_current_median": 0.7793279731016253,
-  "pick_over_best_5e_median": 1.1311133207192545,
-  "pick_over_best_5e_worst": 2.623150749000332,
-  "pick_over_best_cur_median": 1.0316367075203043,
-  "pick_over_best_cur_worst": 1.8695450996228806
+  "t_iter_us": 4.6000000000000005,
+  "d_sat": 3.0,
+  "n_shapes": 28,
+  "cur": {
+   "median_pick_enum": 1.0316367075203043,
+   "median_pick_tieexp": 1.0214804714026307,
+   "mean_pick_tieexp": 1.0727610229771176,
+   "worst_tieexp": 1.4247330195020744,
+   "tau_nearbest_median": 0.5241816688613263
+  },
+  "new": {
+   "median_pick_enum": 1.0217365769989486,
+   "median_pick_tieexp": 1.0168895376941613,
+   "mean_pick_tieexp": 1.0480245644248467,
+   "worst_tieexp": 1.2836094642601088,
+   "tau_nearbest_median": 0.6214391084009445
+  },
+  "beats_current": true
  }
 }

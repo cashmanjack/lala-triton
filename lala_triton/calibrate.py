@@ -152,12 +152,21 @@ def build(args, name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', required=True); ap.add_argument('--gpu', type=int, default=0); ap.add_argument('--shard', default='0/1')
+    ap.add_argument('--decode-table', action='store_true', help='Amendment 5f: add the small-M decode table to an EXISTING profile (--out). Run with --shard i/n per GPU, then once with --build-only.')
     ap.add_argument('--skip-eff', action='store_true'); ap.add_argument('--build-only', action='store_true')
     ap.add_argument('--l2-eff-mib', type=float, default=102.0); ap.add_argument('--l2-eff-source', default='round1 REPORT.md (no misses to 88 MiB, knee ~102 MiB); NOT re-measured')
     ap.add_argument('--window', default='0.5,1.5,1.0'); ap.add_argument('--quick', action='store_true', help='smoke test: 8 tiles per family, 2 latency shapes (profile is NOT usable)')
     args = ap.parse_args(); args.shard = tuple(map(int, args.shard.split('/'))); args.window = tuple(map(float, args.window.split(',')))
     name = os.path.splitext(os.path.basename(args.out))[0]
     os.makedirs(RUNS, exist_ok=True)
+    if args.decode_table:
+        from . import decode
+        if args.build_only:
+            import glob
+            from .profile import load
+            prof = load(args.out); n = decode.build_into(prof, sorted(glob.glob(f'{RUNS}/calib_{name}_decode_*of*.csv'))); save(prof, args.out); log('decode table tiles', n); return
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu); os.environ.setdefault('TRITON_CACHE_DIR', TRITON_CACHE); t0 = time.time()
+        decode.sweep(f'{RUNS}/calib_{name}_decode_{args.shard[0]}of{args.shard[1]}.csv', shard=args.shard, log=log); log(f'decode-table shard done in {(time.time()-t0)/60:.1f} min'); return
     if args.build_only: build(args, name); return
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu); os.environ.setdefault('TRITON_CACHE_DIR', TRITON_CACHE)
     import torch

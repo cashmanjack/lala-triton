@@ -340,3 +340,48 @@ restricted per-M oracle for M <= 32 (24 shapes): plain top-20 U 5b top-5 U 5c di
 Plain top-1 is reported side by side on the same run with the same criteria (not a criterion for the decision).
 **Decision rule.** 5d becomes the default only if (i)-(iii) all hold for **both** dtypes (the cap is dtype-agnostic; a bf16 regression counts against it). Otherwise it stays OFF and the failure is reported.
 No second tweak on these shapes: a further change needs Amendment 5e and another fresh set.
+
+### Amendments 5e, 5f, 5g: 2026-11-23, written before ANY validation timing (small-M / decode selection, Round 6)
+**Why.** Remaining fp8 failures (and some bf16 picks) at M = 1..64 come from the model predicting an identical DRAM-roofline time for most BM=16 tiles, so the winner is decided by enumeration order
+(5b diagnosis; 5d only removed oversized BM). **Step 1 evidence (calibration shapes only; never validation shapes).** I timed every feasible tile with BM <= min(64, 5d cap) (G=8, ABT) on synthetic (N,K) in {2048x2048, 6144x6144, 12288x3072, 3072x12288}, M in {1,2,4,8,16,32,64},
+bf16 and fp8: 6952 timings, both GPUs, `results/r6/decode_sweep_s*.csv`. **These used SHORT diagnosis timing (0.15 s warmup / 0.3 s window / no cooldown, DRAM-cold rotating buffers, CUDA-graph replay), NOT the full sustained protocol** (tile ranking, not absolute speed, is what they are used for).
+Findings that fix the forms below: the current model predicts the same time for most BM=16 tiles (e.g. bf16 M=1 12288x3072: 0.0987 ms for all; measured 0.087 to 0.32 ms); BK (K-loop iterations) is the strongest single factor (R^2 of within-shape log time 0.54 bf16, 0.72 fp8), bytes in flight next (~0.4);
+warps, BN and block count explain almost nothing alone; per-iteration latency is divided by pipeline depth, and num_stages=1 and 2 behave the same, so depth = max(stages-1, 1), saturating near 2-3.
+A first analytical form of 5e (full achieved-bandwidth model with 3 params fitted to pooled RMS log error) improved RMS (0.73 -> 0.39) but made picks WORSE (median pick/best 1.17 vs 1.03) and was **dropped**; the form below was fitted for ranking instead.
+
+**Common to 5e/5f/5g.** Each acts only for M <= 64 (5g also acts at larger M, see below). Each keeps 5d (BM cap + padded-row charge) ON. Plain model otherwise unchanged. Profile: `profiles/rtx6000ada.json` (sha256 prefix 48bce33124722fbd, unchanged) plus the 5f table in `profiles/rtx6000ada_r6.json` (prefix bcdbecf12b854466).
+Opt-in switches, all default OFF: `LALA_TRITON_DECODE5E=1`, `LALA_TRITON_DECODE5F=1`, `LALA_TRITON_AUTO_EPS=0.03`.
+
+#### 5e: K-loop latency floor
+**Rule (frozen).** For M <= 64: T = max(T_current, waves * ceil(K/BK) * t_iter / min(max(stages-1, 1), d_sat)), waves = ceil(blocks / (SMs * occ)), blocks = ceil(M/BM)*ceil(N/BN). (Deviation from the first sketch, which used min(stages, d_sat): the data show stages 1 and 2 are identical, so depth is stages-1.)
+**Fitted parameters (2 per dtype, calibration only, grid search; objective = mean log of expected pick/best over the model's tie group, minus 0.1 * median Kendall tau on near-best tiles (measured <= 1.3x best)):**
+bf16 t_iter = 4.4 us, d_sat = 3; fp8 t_iter = 4.6 us, d_sat = 3 (`lala_triton/params_5e.json`, `eval/fit_5e.py`). Note t_iter is a ranking constant, not a latency: with it the 5e time is a poor ABSOLUTE predictor (RMS log error got worse than current), and is used only to rank.
+**Calibration result (28 shapes/dtype; the same data it was fitted on, so optimistic):** median pick/best bf16 1.026 -> 1.009, fp8 1.021 -> 1.017; mean 1.035 -> 1.019 and 1.073 -> 1.048; worst 1.17 -> 1.11 and 1.42 -> 1.28; median Kendall tau on near-best tiles 0.59 -> 0.69 and 0.52 -> 0.62. It beat the current model on median pick and tau, so it is registered.
+Offline check, no timing: 5e/5f/5e+5f change 0 of 96 picks at M >= 128 versus 5d on four seen models' shapes (and 0 of 96 on the fresh shapes), so large-M behaviour is unchanged by construction.
+
+#### 5f: measured decode table
+**Rule (frozen).** `python3 -m lala_triton.calibrate --decode-table --out <profile> --shard i/n` (then `--build-only`) times every feasible tile (BM <= min(64, 5d cap)) on the 4 calibration (N,K) x 7 M grid above (short diagnosis timing), and stores per (dtype, tile)
+log(BW) = a + b*log(active) + c*log(kit), BW = DRAM bytes / time, active = min(blocks, SMs*occ), kit = ceil(K/BK), ridge-fitted (lambda 0.3 on b, c), with the measured range. For M <= 64 and a tile in the table the time is bytes/BW.
+Active above the table's range is clamped; active below range - 0.4 (log) or kit outside range +- 0.4 (log) or an unseen tile -> fall back and count it (`lala_triton.decode.FALLBACK`). Fallback is the current model (**ours1f**) or 5e (**ours1ef**).
+**Calibration check (leave-one-(N,K)-out over the four calibration sizes, 50% of predictions fell back because every held-out size is at an edge of the other three):**
+5f(+5e fallback) vs 5e: bf16 median pick 1.008 vs 1.009, worst 1.22 vs 1.11, tau 0.62 vs 0.69; fp8 median 1.009 vs 1.017, worst 1.34 vs 1.28, tau 0.60 vs 0.62. I.e. NOT clearly better than 5e on calibration; it is registered as a test arm because the spec asks for it, with that stated up front.
+Cost recorded: calibration about 37 min per GPU on two GPUs (about 75 min on one), profile 132 KB -> 254 KB (indent-2 JSON, 485 tile entries).
+
+#### 5g: benchmark only when unsure
+**Rule (frozen).** On top of 5d + 5e (the model that did best on calibration). Rank all tiles; take distinct tiles at their best G. If no other distinct tile is predicted within eps = 3% of the best -> top-1, zero benchmarking.
+Otherwise return up to 5 distinct tiles from the tied group (greedy max-min diversity over (BM,BN,BK,warps,stages); first pick = model best; ties -> better prediction), which Inductor benchmarks. Applies at every M. eps is NOT tuned.
+**Expected, stated before data (offline, seen models only):** at M <= 32 the tied group has >= 2 tiles for every shape at any eps in 0.3%..3% (100% of shapes), so 5g will benchmark every decode shape; over the whole M grid the benchmark fraction is 0.48 (0.3%), 0.59 (1%), 0.77 (2%), 0.80 (3%).
+So the question 5g answers is cost vs. stock autotuning (5 candidates instead of the stock list) and quality, not "near-zero tuning".
+
+#### Fresh validation set (never used before in this project; values from the published Hugging Face config.json, fetched 2026-11-23, not from memory)
+- **Mistral NeMo 12B** (mistralai/Mistral-Nemo-Base-2407): hidden 5120, intermediate 14336, 32 heads, 8 KV heads, head_dim 128 (explicit in config). (N,K): qkv (6144,5120), o (5120,4096) [K = 32*128, not hidden], gate_up (28672,5120), down (5120,14336).
+- **Phi-3 medium** (microsoft/Phi-3-medium-4k-instruct): hidden 5120, intermediate 17920, 40 heads, 10 KV heads, no head_dim key so 5120/40 = 128. (N,K): qkv (7680,5120), o (5120,5120), gate_up (35840,5120), down (5120,17920).
+M in {1, 8, 32, 128, 512, 2048, 8192}; bf16 (A@B.T) and fp8: 2 models x 4 GEMMs x 7 M x 2 dtypes = 112 shapes. No (N,K) here is a calibration size; the shared dimensions with seen models (28672 with Gemma gate_up, 5120/14336 with Llama/Gemma) are paired with different partners.
+Offline predictions of every selector variant, written before any timing: `results/r6/predictions_fresh.csv` (`eval/offline_r6_picks.py`).
+**Methods (all in the SAME run, interleaved, 3 reps, medians, sustained window 0.5/1.5/1.0 s, capture-after-compile harness):** ind_auto, cublas, ours1, ours1pc (5d), ours1e (5d+5e), ours1f (5d+5f, falls back to current), ours1ef (5d+5e+5f), ours5d (5c distinct top-5), ours_auto (5d+5e+5g), tritonblas, oracle at M in {1, 8, 32, 128}.
+ours1e/ours1f/ours1ef are measured at M <= 64 only (M=1, 8, 32 here); at M >= 128 their picks equal ours1pc's (checked offline above). The restricted oracle pool is the previous one (plain top-20, 5b, 5c, 5d top-20, 100 random tiles seed 5, G=8) PLUS the 5e, 5f and 5e+5f top-20, so it cannot be easier than before. Every timed pool candidate is logged with its predicted time under each model (`*_oraclepool.csv`) for the Kendall tau diagnostic.
+**Criteria, per dtype, for EACH of 5e, 5f(+5e fallback), 5g vs stock max-autotune and the oracle (R5-V verbatim):** (i) geomean <= 1.03; (ii) no shape > 1.15; (iii) every M <= 32 shape within 1.10 of the oracle.
+**Added criteria:** (iv) no regression vs 5d: bf16 geomean vs ind_auto no more than 0.01 worse than ours1pc's and no bf16 shape where the method is > 1.05 x ours1pc with a different pick; (v) median Kendall tau (predicted vs measured over the oracle pool, M <= 32, per shape) at least ours1pc's... reported as a diagnostic, not pass/fail.
+For 5g additionally: benchmark fraction and tuning time (first-call seconds, geomean over shapes) are reported against stock max-autotune; **registered threshold (vi): geomean 5g first-call time <= 0.75 x stock's**. A failing (vi) with passing (i)-(iii) is reported as "quality yes, cost no".
+**Decision rule.** Each of 5e, 5f, 5g becomes a recommended default only if (i)-(iv) hold for BOTH dtypes (5g also (vi)). Otherwise it stays OFF and the failure is reported. If both pass, the simplest (5e, then 5g) is recommended. No re-tuning on these shapes.
+**Honest limits registered up front:** one GPU model (RTX 6000 Ada, power-capped), 4 calibration (N,K) sizes for 5f (thin), diagnosis-grade timing for 5e/5f fitting, no Hopper, no real tritonBLAS code, no end-to-end serving test.

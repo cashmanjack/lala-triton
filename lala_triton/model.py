@@ -6,6 +6,11 @@ PEAK = {'bf16': 364.2e12, 'fp8': 728.5e12}
 LAUNCH = 4e-6
 import os
 PAD = os.environ.get('LALA_TRITON_PADCAP', '0') == '1'     # Amendment 5d: BM cap + padded-row A charge; default OFF until validated
+DEC5E = os.environ.get('LALA_TRITON_DECODE5E', '0') == '1'   # Amendment 5e: K-loop latency floor (M<=64); default OFF until validated
+DEC5F = os.environ.get('LALA_TRITON_DECODE5F', '0') == '1'   # Amendment 5f: measured decode table (M<=64); falls back to 5e if DEC5E else to the current model
+import json as _json
+try: _P5E = _json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'params_5e.json')))
+except OSError: _P5E = {}
 TRAFFIC = os.environ.get('LALA_TRITON_TRAFFIC', 'm3')     # 'm3' (default) or 'naive' (ablation: per-tile traffic, no L2 reuse model)
 
 def tile_key(bm, bn, bk, s, w): return f'{bm}x{bn}x{bk}_w{w}_s{s}'
@@ -71,6 +76,15 @@ def predict(M, N, K, cfg, dtype, prof, layout='ABT', occ=None, eff=None, detail=
     t_dram = nbytes / (prof['hbm_bw'] * attain)
     t_l2 = ((pad_rows(M, BM) if PAD else M) * K * s * math.ceil(N / BN) + N * K * s * math.ceil(M / BM)) / prof['l2_bw']
     t = max(t_comp, t_dram, t_l2) + LAUNCH
+    if M <= 64 and (DEC5E or DEC5F):
+        t5f = None
+        if DEC5F:
+            from . import decode as _dec
+            t5f = _dec.predict(M, N, K, BM, BN, BK, tk, dtype, occ, nbytes, prof)
+        if t5f is not None: t = t5f
+        elif DEC5E and dtype in _P5E:
+            q = _P5E[dtype]; waves = math.ceil(P / (n_sm * occ))
+            t = max(t, waves * math.ceil(K / BK) * q['t_iter_us'] * 1e-6 / min(max(st - 1, 1), q['d_sat']))
     if detail: return t, dict(t_comp=t_comp, t_dram=t_dram, t_l2=t_l2, bytes=nbytes, read=A + B, attain=attain, occ=occ, eff=eff, **info)
     return t
 

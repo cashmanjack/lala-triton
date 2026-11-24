@@ -8,8 +8,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from lala_triton.config import ROOT, TRITON_CACHE
 
 M_GRID = [1, 8, 32, 128, 512, 2048, 8192]
-METHODS = ['ours1', 'ours1pc', 'ours5d', 'ours1tb', 'ours1naive', 'ours5', 'ind_auto', 'ind_default', 'cublas', 'nvmm', 'tritonblas', 'oracle']
+METHODS = ['ours1', 'ours1pc', 'ours1e', 'ours1f', 'ours1ef', 'ours_auto', 'ours5d', 'ours1tb', 'ours1naive', 'ours5', 'ind_auto', 'ind_default', 'cublas', 'nvmm', 'tritonblas', 'oracle']
 ORACLE_SUBSET_M = (8, 128, 2048)
+R6_FLAGS = {'ours1e': dict(e=True, f=False, auto=False), 'ours1f': dict(e=False, f=True, auto=False), 'ours1ef': dict(e=True, f=True, auto=False), 'ours_auto': dict(e=True, f=False, auto=True)}
+AUTO_EPS = 0.03     # Amendment 5g (pre-registered)
+SMALL_M_ONLY = ('ours1e', 'ours1f', 'ours1ef')   # 5e/5f act only at M<=64; at larger M their picks equal ours1pc by construction (verified offline, eval/offline_r6_picks.py)
 
 def parse():
     ap = argparse.ArgumentParser()
@@ -75,6 +78,10 @@ class Bench:
         elif method == 'ours1pc':      # Amendment 5d: BM cap + padded-row charge (flag restored right after compile)
             M3_.PAD = True
             fn, ind = self.compiled(dtype, 'max-autotune-no-cudagraphs', 'TRITON', 1)
+        elif method in R6_FLAGS:       # Round 6: 5d cap always on; 5e floor / 5f table / 5g auto-benchmark (flags restored right after compile)
+            from lala_triton import select as S
+            f = R6_FLAGS[method]; M3_.PAD = True; M3_.DEC5E = f['e']; M3_.DEC5F = f['f']; S.AUTO_EPS = AUTO_EPS if f['auto'] else None
+            fn, ind = self.compiled(dtype, 'max-autotune-no-cudagraphs', 'TRITON', 5 if f['auto'] else 1)
         elif method == 'ours1naive':   # ablation: naive traffic model (flag restored right after compile)
             M3_.TRAFFIC = 'naive'
             fn, ind = self.compiled(dtype, 'max-autotune-no-cudagraphs', 'TRITON', 1)
@@ -95,13 +102,38 @@ class Bench:
                 from lala_triton import select as S; S.TIEBREAK = False
             if method == 'ours1naive': M3_.TRAFFIC = 'm3'
             if method == 'ours1pc': M3_.PAD = False
+            if method in R6_FLAGS:
+                from lala_triton import select as S
+                M3_.PAD = False; M3_.DEC5E = False; M3_.DEC5F = False; S.AUTO_EPS = None
             if method == 'ours5d':
                 from lala_triton import select as S; S.DISTINCT = False
         info['first_call_s'] = time.time() - t0
+        if method == 'ours_auto':
+            from lala_triton import select as S
+            if S.AUTO_STATS: info['auto'] = json.dumps(S.AUTO_STATS[-1]); S.AUTO_STATS.clear()
         info['autotune'] = ' | '.join(self.autolog)[:2000]
         m = re.search(r'BLOCK_M=(\d+).*?BLOCK_N=(\d+).*?BLOCK_K=(\d+)', ' '.join(l for l in self.autolog if 'BLOCK_M' in l))
-        if method in ('ours1', 'ours1pc', 'ours1tb', 'ours1naive') and ind.STATE['log']: info['pick'] = json.dumps(ind.STATE['log'][-1][4])
+        if method in ('ours1', 'ours1pc', 'ours1tb', 'ours1naive', 'ours1e', 'ours1f', 'ours1ef', 'ours_auto') and ind.STATE['log']: info['pick'] = json.dumps(ind.STATE['log'][-1][4])
         return [lambda a=a, b=b, fn=fn: fn(a, b) for a, b, c in sets], info
+
+POOL_LOG = {'path': None, 'ctx': None}
+
+def _pool_row(bench, M, N, K, dtype, c, ms):
+    """Round 6: one row per timed oracle-pool candidate with its predicted time under each model (5d pad charge on, so the models are comparable)."""
+    from lala_triton import model as M3
+    out = {}
+    old = (M3.PAD, M3.DEC5E, M3.DEC5F)
+    try:
+        M3.PAD = True
+        for nm, (e_, f_) in dict(p_cur=(False, False), p_5e=(True, False), p_5f=(False, True), p_5ef=(True, True)).items():
+            M3.DEC5E, M3.DEC5F = e_, f_; out[nm] = M3.predict(M, N, K, c, dtype, bench.prof, bench.layout) * 1e3
+    finally: M3.PAD, M3.DEC5E, M3.DEC5F = old
+    row = dict(zip(('model', 'gemm', 'dtype', 'M', 'N', 'K'), POOL_LOG['ctx']), tile=f"{c['BM']}x{c['BN']}x{c['BK']}_w{c['num_warps']}_s{c['num_stages']}_G{c['G']}", ms=ms, **out)
+    new = not os.path.exists(POOL_LOG['path'])
+    with open(POOL_LOG['path'], 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(row))
+        if new: w.writeheader()
+        w.writerow(row)
 
 def oracle_cfg(bench, sh, M, N, K, dtype, gpu, rng_seed=5):
     """Restricted oracle: model top-20 U 100 random calibrated tiles (G=8), sustained 0.3/0.8/0.3 s, best kept (R5-V)."""
@@ -112,6 +144,10 @@ def oracle_cfg(bench, sh, M, N, K, dtype, gpu, rng_seed=5):
     cands += [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=5, tiebreak=True)]
     cands += [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=5, distinct=True)]   # Amendment 5c   # Amendment 5b: tie-break picks always in the oracle pool
     cands += [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=20, padcap=True)]    # Amendment 5d: the capped selector's top-20 are always in the oracle pool
+    for e_, f_ in ((True, False), (False, True), (True, True)):    # Round 6: the 5e / 5f / 5e+5f top-20 (5d cap on) are always in the oracle pool
+        old = (M3.DEC5E, M3.DEC5F); M3.DEC5E, M3.DEC5F = e_, f_
+        try: cands += [c for _, c in select_scored(M, N, K, dtype, bench.layout, bench.prof, k=20, padcap=True)] if M <= 64 else []
+        finally: M3.DEC5E, M3.DEC5F = old
     sp = _space(bench.prof, dtype, bench.layout); rnd = random.Random(f'{rng_seed}-{M}-{N}-{K}-{dtype}').sample(sp, min(100, len(sp)))
     cands += [dict(BM=t['BM'], BN=t['BN'], BK=t['BK'], G=8, num_warps=t['num_warps'], num_stages=t['num_stages']) for t in rnd]
     seen, best = set(), (1e9, None)
@@ -121,6 +157,9 @@ def oracle_cfg(bench, sh, M, N, K, dtype, gpu, rng_seed=5):
         seen.add(k)
         try: res, _ = time_cfg(sh, c, gpu, 0.3, 0.8, 0.3)
         except Exception: continue
+        if res and POOL_LOG['path'] and M <= 128:
+            try: _pool_row(bench, M, N, K, dtype, c, res['ms_per_gemm'])
+            except Exception as e: print('POOLLOG FAIL', repr(e)[:100], flush=True)
         if res and res['ms_per_gemm'] < best[0]: best = (res['ms_per_gemm'], c)
     return best[1], best[0]
 
@@ -151,13 +190,13 @@ def main():
     if a.gemms: jobs = [j for j in jobs if j[1] in a.gemms.split(',')]
     jobs = jobs[a.shard[0]::a.shard[1]]
     for (model, g, N, K, dt, M) in jobs:
-        todo = [(me, r) for me in methods if me in avail and (me != 'oracle' or M in oracle_ms) for r in range(a.reps)
+        todo = [(me, r) for me in methods if me in avail and (me != 'oracle' or M in oracle_ms) and not (me in SMALL_M_ONLY and M > 64) for r in range(a.reps)
                 if (model, g, dt, str(M), me, str(r)) not in done]
         if not todo: continue
         t0 = time.time(); sh = Shape(M, N, K, dt, B.layout); fns, infos, graphs = {}, {}, {}
         for me in sorted({me for me, _ in todo}):
             cfg = None
-            if me == 'oracle': cfg, o_ms = oracle_cfg(B, sh, M, N, K, dt, a.gpu); infos[me] = dict(oracle_screen_ms=o_ms)
+            if me == 'oracle': POOL_LOG.update(path=f'{a.out}/{a.tag}_oraclepool.csv', ctx=(model, g, dt, M, N, K)); cfg, o_ms = oracle_cfg(B, sh, M, N, K, dt, a.gpu); infos[me] = dict(oracle_screen_ms=o_ms)
             if me == 'tritonblas': cfg = TB.select(M, N, K, dt, B.layout, B.prof)
             try:
                 ts = time.time()
@@ -177,7 +216,7 @@ def main():
                 except Exception as e:
                     print('MEASURE FAIL', me, repr(e)[:200], flush=True); continue
                 pred = ''
-                if me in ('ours1', 'ours1pc', 'ours1tb', 'ours1naive', 'oracle', 'tritonblas'):
+                if me in ('ours1', 'ours1pc', 'ours1tb', 'ours1naive', 'ours1e', 'ours1f', 'ours1ef', 'ours_auto', 'oracle', 'tritonblas'):
                     try:
                         c = json.loads(infos[me].get('pick') or infos[me].get('cfg'))
                         c = dict(BM=c.get('BM', c.get('BLOCK_M')), BN=c.get('BN', c.get('BLOCK_N')), BK=c.get('BK', c.get('BLOCK_K')), G=c.get('G', c.get('GROUP_M', 8)),
@@ -185,7 +224,7 @@ def main():
                         pred = M3.predict(M, N, K, c, dt, B.prof, B.layout) * 1e3
                     except Exception: pred = ''
                 row = dict(model=model, gemm=g, dtype=dt, M=M, N=N, K=K, method=me, rep=r, ms=res['ms_per_gemm'], sm_clk=res['sm_clk_med'], power=res['power_mean'],
-                           temp0=res['temp0'], energy_J=res['energy_J_per_gemm'], energy_W=res['energy_power_W'], pred_ms=pred, pick=infos[me].get('pick') or infos[me].get('cfg') or '', setup_s=infos[me].get('setup_s', ''),
+                           temp0=res['temp0'], energy_J=res['energy_J_per_gemm'], energy_W=res['energy_power_W'], pred_ms=pred, pick=infos[me].get('pick') or infos[me].get('cfg') or '', auto=infos[me].get('auto', ''), setup_s=infos[me].get('setup_s', ''),
                            first_call_s=infos[me].get('first_call_s', ''), ts=time.strftime('%F %T'))
                 new = not os.path.exists(path)
                 with open(path, 'a', newline='') as f:
