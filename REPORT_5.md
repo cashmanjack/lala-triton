@@ -230,3 +230,52 @@ Decision (pre-registered): 5d needs both dtypes to pass (i)-(iii); fp8 fails (ii
 - **Does this explain Dongyoon's L40S failure?** Only partly, and I cannot check. On our RTX 6000 Ada (same AD102 die) the 5d cap fixes the BM=128/256 picks (gate_up, qkv) but `o` M=1, the shape he reported at 7.5x, already picked BM=16 here (1.24x slower than stock), so 5d is a no-op for it. His 7.5x must come from a different pick, a different `o` shape or different calibration on his GPU. His profile and picks are needed to say more.
 - **Side note.** bf16 `qkv` M=1 has no recorded Inductor pick for either selector (Inductor lowers that shape without a template); the two ratios are 1.00005 and 1.00003, i.e. the same kernel. My first pick-difference count was 1 because of a NaN comparison; the script now counts 0.
 - **Caveats.** One fresh model, one GPU type (both GPUs are the same part), 28 shapes per dtype, 3 reps; criteria (ii) and (iii) are single-shape maxima, so they are sensitive to the few small-M shapes. Three of the four Gemma shapes share K=3584 with Qwen 2.5 7B (different N), so this set is fresh by shape but not unrelated by dimension. The oracle is restricted and larger than in 5c (extra capped top-20), so it is no easier to match. fp8 has now failed pre-registered criteria on four held-out sets (8B, 70B TP=8, Qwen, Gemma) with three different fixes; bf16 has passed all five.
+
+## F9. Round 6: small-M (decode) selection: 5e, 5f, 5g on fresh Mistral NeMo 12B and Phi-3 medium (2026-11-23/24)
+Pre-registered in `PREREGISTRATION.md` (Amendments 5e/5f/5g) and committed before any validation timing; predictions in `results/r6/predictions_fresh.csv`. 112 shapes (2 models x 4 GEMMs x 7 M x bf16/fp8), all methods interleaved in one run on both RTX 6000 Ada GPUs, sustained protocol, 3 reps, medians, capture-after-compile harness. Oracle (M = 1, 8, 32, 128; pool also contains the 5e/5f top-20) timed on 24 shapes per dtype at M <= 32 for the criteria. Raw: `results/r6/r6_fresh_s*.csv`, `*_oraclepool.csv`, `r6_summary.json`, `r6_per_shape.csv`. **Calibration used SHORT diagnosis timing (0.15 s warmup / 0.3 s window / no cooldown), not the sustained protocol; validation used the full sustained protocol.**
+
+### 1. What Step 1 showed (calibration shapes only)
+- The current model predicts the *same* time for most BM=16 tiles (bf16 M=1 12288x3072: 0.0987 ms for all of them; measured 0.087 to 0.32 ms). The tie is broken by enumeration order.
+- The thing that actually separates fast from slow tiles is **BK, i.e. the number of K-loop iterations** (share of within-shape log-time variance: 0.54 bf16, 0.72 fp8), then bytes in flight per block (about 0.4). Number of active blocks, warps and BN explain almost nothing on their own (R^2 <= 0.03). Small BK (16, 32) with few stages is latency-bound: per-iteration latency is divided by pipeline depth, and num_stages 1 and 2 behave the same (depth = stages-1, saturating at about 2-3).
+- The current model is not bad on average on the calibration shapes (median pick 1.03x the measured best) but has large misses on a few shapes (up to 2.1x bf16, 1.9x fp8).
+- A first, fuller form of 5e (achieved bandwidth from active blocks x bytes in flight, 3 parameters fitted to pooled RMS error) got a better RMS (0.73 to 0.39) but picked *worse* tiles (median 1.17x); a pooled-RMS fit rewards the slow tiles. It was dropped; the registered 5e is a 2-parameter K-loop latency floor fitted for ranking.
+
+### 2. Verdicts on the fresh models (pre-registered criteria, per dtype; ratio vs stock max-autotune; (iii) = every M <= 32 shape within 1.10 of the oracle)
+| method | bf16 geomean / worst | bf16 (i) (ii) (iii) | fp8 geomean / worst | fp8 (i) (ii) (iii) |
+|---|---|---|---|---|
+| `ours1` (round-5) | 0.950 / 1.06 | pass pass pass | 1.116 / 1.71 | FAIL FAIL FAIL |
+| `ours1pc` (5d) | 0.950 / 1.06 | pass pass pass | 1.080 / 1.51 | FAIL FAIL FAIL |
+| **`ours1e` (5e)** | 0.951 / 1.06 | pass pass pass, (iv) ok | 1.058 / 1.51 | FAIL FAIL FAIL (1.31 at `gate_up` M=1) |
+| **`ours1f` (5f, fallback current)** | 0.955 / 1.15 | pass pass **FAIL** (1.13, Phi-3 `o` M=32) | 1.049 / 1.51 | FAIL FAIL pass (1.04) |
+| **`ours1ef` (5f + 5e fallback)** | 0.955 / 1.15 | pass pass **FAIL** (1.13) | 1.049 / 1.51 | FAIL FAIL pass |
+| `ours5d` (5c top-5) | 0.942 / 1.06 | pass pass pass | 1.018 / 1.36 | pass FAIL pass |
+| **`ours_auto` (5g = 5d+5e+benchmark when unsure)** | 0.950 / 1.06 | pass pass pass, (iv) ok | 1.026 / 1.37 | pass **FAIL** pass |
+| `tritonblas`-style | 0.992 / 1.19 | pass FAIL pass | 1.026 / 1.20 | pass FAIL pass |
+| `cublas` | 1.156 / 1.75 | FAIL FAIL | 1.132 / 1.41 | FAIL FAIL |
+
+**By the registered decision rule none of 5e, 5f, 5g becomes a default: each fails at least one criterion for fp8, and 5f also fails bf16 (iii).** (5g's (iv) passes: +/-0.001 vs `ours1pc`, one bf16 shape >1.05x.)
+
+**What the failures are (so the fail is not over- or under-read).** Every worst shape in the fp8 rows above is at **M = 512 (`o`, `down`, `qkv`, up to 1.51x)**, with the same ~1.5x for every `ours1*` variant. This is mid-M, outside the decode regime that 5e/5f/5g are about, and it is identical across 5d/5e/5f by construction (their picks equal 5d's at M >= 128; 0 of 96 picks differ offline, and 0 of 96 on the fresh shapes). It is a separate problem, not caused or fixed by this round (the picked tile is BM=64, BN=64, 2 stages; tritonBLAS-style picks 128x256x128 there and is only 1.04x). **Post-hoc split (not a pre-registered criterion; read as description only):**
+| decode, M <= 32, geomean / worst vs stock | `ours1` | `ours1pc` | `ours1e` | `ours1f`/`ours1ef` | `ours5d` | `ours_auto` |
+|---|---|---|---|---|---|---|
+| bf16 | 1.002 / 1.06 | 1.001 / 1.06 | 1.003 / 1.06 | 1.014 / 1.15 | 1.001 / 1.04 | **0.998 / 1.01** |
+| fp8 | 1.166 / 1.71 | 1.082 / 1.32 | 1.031 / 1.32 | 1.010 / 1.05 | 1.010 / 1.03 | **1.009 / 1.08** |
+At decode, 5g and 5f essentially close the fp8 gap (from 1.17 / 1.71 down to about 1.01 / 1.05-1.08). 5e alone helps only partly (1.082 to 1.031) and still leaves `gate_up` M=1 at 1.31x; the remaining `ours1e` miss is a tie the K-loop floor does not break. 5f's (iii) bf16 fail comes from the table choosing a poor tile for Phi-3 `o` M=32 (an N,K that is far from the four calibration sizes).
+
+### 3. Ranking quality (Kendall tau between predicted and measured time over the oracle's candidate pool, M <= 32, median over shapes; about 140-150 timed candidates per shape)
+| | current (5d) | 5e | 5f | 5e+5f |
+|---|---|---|---|---|
+| bf16 tau | 0.696 | 0.686 | 0.690 | 0.686 |
+| fp8 tau | 0.751 | 0.750 | **0.787** | 0.754 |
+| median number of pool candidates predicted within 2% of the model's best | 51 | **22** | 27 | 27 |
+So on the fresh pool **5e roughly halves the ties but does not improve overall rank correlation** (the calibration gain in tau on near-best tiles, 0.59 to 0.69, did not carry over to the whole pool here; different metric and different shapes); 5f improves fp8 tau slightly. Ties remain large, which is why the decisive improvement at decode comes from 5g's benchmarking rather than from a better analytic model. Honest reading: **5e and 5f did not make the analytical model a reliable ranker at small M.**
+
+### 4. Costs
+- **5f calibration:** about 37 min per GPU when sharded over two GPUs (3,540 timings each; about 75 min on one GPU), slightly under the 45-min-per-GPU target for two GPUs and over it for one. Profile 132 KB to 254 KB (485 tile entries; indent-2 JSON). Command: `python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --shard i/n`, then `--build-only`. The table has only 4 calibration (N,K) sizes (thin); on seen models 12 of 96 decode shapes needed fallbacks, none of the 48 fresh decode shapes did.
+- **5g:** benchmarks (returns up to 5 tiles) on **79% of shapes overall and 100% of M <= 32** (offline prediction was 80% / 100%: the model is always "unsure" at decode, so this is not near-zero tuning there). Even so, geomean first-call time is **0.25 s vs 9.2 s for stock max-autotune (0.027x)**, passing the registered tuning-cost criterion (vi) <= 0.75x; `ours1pc`/`ours1e` need 0.06-0.13 s, 5c top-5 1.3 s. Benchmark fraction and tuning time are for the RTX 6000 Ada with warm Triton compile cache effects as in earlier rounds.
+
+### 5. Recommended configuration for Dongyoon's next run
+Run every method (README command) on the L40S: it is the same AD102 die, so this is the closest test of whether decode picks transfer. The pre-registered rule promotes none, so the defaults stay as they are. For a decode (M <= 32) deployment candidate use **5g (`ours_auto` = 5d + 5e + benchmark up to 5 distinct tiles when unsure)**: best or tied-best at decode in both dtypes (bf16 0.998 / worst 1.01; fp8 1.009 / worst 1.08) at about 3% of stock tuning time, no bf16 regression. 5f is optional (it adds calibration and failed bf16 (iii)); 5e alone is not enough for fp8 at M=1. Do not read any of this as fixing fp8 overall: M = 512 fails for every `ours*` method.
+
+### 6. Honest assessment
+Does this support "analytical model for large M plus a measured decode table matches autotuning with near-zero tuning"? **Not as stated.** (a) At decode, the *measured table* (5f) did not beat the simpler analytic floor everywhere and failed a bf16 criterion; what matched stock was **benchmarking 5 tiles (5g)**, i.e. a small, not zero, tuning cost, triggered on every decode shape. (b) The claim for large M is not supported on fp8: M=512 `o`/`down`/`qkv` are 1.3-1.5x slower than stock for our top-1 and 1.1-1.4x for 5g. (c) What the evidence does support: on bf16 the selector matches or beats stock (geomean about 0.95) with near-zero tuning, and a 5-candidate benchmark at about 3% of stock tuning time matches stock at decode on both dtypes. Missing: other GPUs (Dongyoon's L40S is pending), Hopper, the real tritonBLAS code (ours is a transcription), the mid-M fp8 problem, an end-to-end serving result, a 5f table with more than four calibration sizes, and sustained-protocol (not short) timing for the calibration sweep. Single-GPU-model, power-capped, one run per shape; noise between repeated shapes is about 2 points.

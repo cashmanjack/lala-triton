@@ -38,6 +38,19 @@ Method names in `--methods`: `ind_auto` stock Inductor max-autotune (ATEN+TRITON
 Turning 5d on outside this harness: environment variable `LALA_TRITON_PADCAP=1` (default off), or `select_scored(..., padcap=True)` for one call. `ours1pc` sets it for you; do not set the env var for this run (it would also change `ours1`, `ours1tb`, `ours5d` and the oracle pools).
 A profile made by the existing calibrate.py works unchanged (5d did not change the profile format or calibration); sanity check: `python3 -c "import lala_triton.profile as p; q=p.load('profiles/<gpu>.json'); print(q['n_sm'], q['l2_eff']/2**20, {k: sum(t.startswith('16x') for t in m) for k, m in q['meta'].items()})"` should print non-zero BM=16 tile counts for `bf16|ABT` and `fp8|ABT` (5d raises an error if none exist).
 
+## Round 6: decode (small-M) methods, the decode table, and the Dongyoon command
+New methods (REPORT_5.md F9; Amendments 5e/5f/5g, all OFF by default): `ours1e` (5d + 5e K-loop latency floor), `ours1f` (5d + 5f measured decode table, falls back to the current model), `ours1ef` (5d + 5e + 5f, falls back to 5e),
+`ours_auto` (5d + 5e + 5g: benchmark up to 5 distinct tiles only when the model is unsure, eps = 3%), plus `cublas`. Switches: `LALA_TRITON_DECODE5E=1`, `LALA_TRITON_DECODE5F=1`, `LALA_TRITON_AUTO_EPS=0.03`.
+5f needs a decode table in the profile. Add it to an existing profile (about 37 min per GPU on 2 GPUs, about 75 min on one; resumable):
+    nohup python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --gpu 0 --shard 0/2 > d0.log &
+    nohup python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --gpu 1 --shard 1/2 > d1.log &
+    python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --build-only --shard 0/2     # when both print "decode-table shard done"
+(`profiles/rtx6000ada_r6.json` is the RTX 6000 Ada profile with its table.) Fresh-model validation on another GPU, all methods interleaved (about 6 h for 112 shapes on 2 GPUs; the oracle at M <= 128 dominates):
+    python3 eval/run_eval.py --profile profiles/<gpu>.json --models mistral-nemo-12b,phi3-medium --dtypes bf16,fp8 --ms 1,8,32,128,512,2048,8192 \
+        --methods ind_auto,cublas,ours1,ours1pc,ours1e,ours1f,ours1ef,ours5d,ours_auto,tritonblas,oracle --oracle-ms 1,8,32,128 --tag r6_fresh_<gpu>_s0 --out results/r6 --gpu 0 --shard 0/2
+    # same with --gpu 1 --shard 1/2 --tag r6_fresh_<gpu>_s1; then: python3 eval/analyze_r6.py   (edit the glob in it to your tag; prints verdicts, Kendall tau, tuning time, benchmark fraction)
+Older Gemma command above still works; `eval/analyze_5d.py <tag>` now reports every method present in a run.
+
 ## Repository layout
 `lala_triton/` package, `tests/`, `eval/` harness (run_eval, tuning_time, e2e_layer, analyze_*, plot_*), `profiles/` (RTX 6000 Ada profile), `results/` + `plots/` (summary CSVs/plots only),
 `PREREGISTRATION.md` (thresholds written before data), `REPORT_5.md` (results and honest caveats), `legacy/` (round 1-3 one-off scripts and reports, kept for provenance; not maintained, and they hardcode the original machine's paths).
