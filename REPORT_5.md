@@ -262,6 +262,8 @@ Pre-registered in `PREREGISTRATION.md` (Amendments 5e/5f/5g) and committed befor
 | fp8 | 1.166 / 1.71 | 1.082 / 1.32 | 1.031 / 1.32 | 1.010 / 1.05 | 1.010 / 1.03 | **1.009 / 1.08** |
 At decode, 5g and 5f essentially close the fp8 gap (from 1.17 / 1.71 down to about 1.01 / 1.05-1.08). 5e alone helps only partly (1.082 to 1.031) and still leaves `gate_up` M=1 at 1.31x; the remaining `ours1e` miss is a tie the K-loop floor does not break. 5f's (iii) bf16 fail comes from the table choosing a poor tile for Phi-3 `o` M=32 (an N,K that is far from the four calibration sizes).
 
+**Completeness and criterion (v).** Both shards finished: 56 shapes each (112 total), 11 methods, 3 reps for every shape/method, no missing or non-positive timings. Criterion (v) (median Kendall tau vs `ours1pc`) is garbled in the pre-registration text ("at least ours1pc's...") and is diagnostic only; it is reported in section 3 and is not part of any pass/fail verdict above. Step 1 conclusions come from SHORT diagnosis timing, not the sustained protocol.
+
 ### 3. Ranking quality (Kendall tau between predicted and measured time over the oracle's candidate pool, M <= 32, median over shapes; about 140-150 timed candidates per shape)
 | | current (5d) | 5e | 5f | 5e+5f |
 |---|---|---|---|---|
