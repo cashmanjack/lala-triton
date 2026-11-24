@@ -45,7 +45,7 @@ New methods (REPORT_5.md F9; Amendments 5e/5f/5g, all OFF by default): `ours1e` 
     nohup python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --gpu 0 --shard 0/2 > d0.log &
     nohup python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --gpu 1 --shard 1/2 > d1.log &
     python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --build-only --shard 0/2     # when both print "decode-table shard done"
-(`profiles/rtx6000ada_r6.json` is the RTX 6000 Ada profile with its table.) Fresh-model validation on another GPU, all methods interleaved (about 6 h for 112 shapes on 2 GPUs; the oracle at M <= 128 dominates):
+(`profiles/rtx6000ada_r6.json` is the RTX 6000 Ada profile with its table.) Fresh-model validation on another GPU, all methods interleaved (about 4 h for 112 shapes on 2 GPUs, measured; the oracle at M <= 128 dominates):
     python3 eval/run_eval.py --profile profiles/<gpu>.json --models mistral-nemo-12b,phi3-medium --dtypes bf16,fp8 --ms 1,8,32,128,512,2048,8192 \
         --methods ind_auto,cublas,ours1,ours1pc,ours1e,ours1f,ours1ef,ours5d,ours_auto,tritonblas,oracle --oracle-ms 1,8,32,128 --tag r6_fresh_<gpu>_s0 --out results/r6 --gpu 0 --shard 0/2
     # same with --gpu 1 --shard 1/2 --tag r6_fresh_<gpu>_s1; then: python3 eval/analyze_r6.py   (edit the glob in it to your tag; prints verdicts, Kendall tau, tuning time, benchmark fraction)
