@@ -5,7 +5,8 @@ from scipy.stats import kendalltau
 d = pd.concat([pd.read_csv(f) for f in sorted(glob.glob('results/r6/r6_fresh*_s?.csv'))])
 t = d.groupby(['model', 'gemm', 'dtype', 'M', 'method']).ms.median().unstack('method').reset_index()
 # 5e/5f/5ef equal ours1pc by construction at M>64 (offline-verified); fill so every method covers all shapes
-for m in ('ours1e', 'ours1f', 'ours1ef'): t[m] = t[m].fillna(t.ours1pc.where(t.M > 64))
+for m in ('ours1e', 'ours1f', 'ours1ef'):
+    if m in t: t[m] = t[m].fillna(t.ours1pc.where(t.M > 64))
 gm = lambda x: float(np.exp(np.log(x.dropna()).mean()))
 M_ = ['ours1', 'ours1pc', 'ours1e', 'ours1f', 'ours1ef', 'ours5d', 'ours_auto', 'tritonblas', 'cublas']
 out = {}

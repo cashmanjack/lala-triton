@@ -45,10 +45,13 @@ New methods (REPORT_5.md F9; Amendments 5e/5f/5g, all OFF by default): `ours1e` 
     nohup python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --gpu 0 --shard 0/2 > d0.log &
     nohup python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --gpu 1 --shard 1/2 > d1.log &
     python3 -m lala_triton.calibrate --decode-table --out profiles/<gpu>.json --build-only --shard 0/2     # when both print "decode-table shard done"
-(`profiles/rtx6000ada_r6.json` is the RTX 6000 Ada profile with its table.) Fresh-model validation on another GPU, all methods interleaved (about 4 h for 112 shapes on 2 GPUs, measured; the oracle at M <= 128 dominates):
-    python3 eval/run_eval.py --profile profiles/<gpu>.json --models mistral-nemo-12b,phi3-medium --dtypes bf16,fp8 --ms 1,8,32,128,512,2048,8192 \
-        --methods ind_auto,cublas,ours1,ours1pc,ours1e,ours1f,ours1ef,ours5d,ours_auto,tritonblas,oracle --oracle-ms 1,8,32,128 --tag r6_fresh_<gpu>_s0 --out results/r6 --gpu 0 --shard 0/2
-    # same with --gpu 1 --shard 1/2 --tag r6_fresh_<gpu>_s1; then: python3 eval/analyze_r6.py   (edit the glob in it to your tag; prints verdicts, Kendall tau, tuning time, benchmark fraction)
+(`profiles/rtx6000ada_r6.json` is the RTX 6000 Ada profile with its table.) **The Dongyoon command does not need the decode table**: it skips `ours1f`/`ours1ef`, so use a normal calibrated profile (the section above on calibration) and do not run the `--decode-table` step.
+
+### Dongyoon command: Gemma 2 9B + Mistral NeMo 12B + Phi-3 medium (one run, all methods interleaved)
+    python3 eval/run_eval.py --profile profiles/<gpu>.json --models gemma2-9b,mistral-nemo-12b,phi3-medium --dtypes bf16,fp8 --ms 1,8,32,128,512,2048,8192 \
+        --methods ind_auto,cublas,ours1,ours1pc,ours5d,ours_auto,tritonblas,oracle --oracle-ms 1,8,32,128 --tag r6_dongyoon_<gpu>_s0 --out results/r6 --gpu 0 --shard 0/2
+    # with a second GPU, the same with --gpu 1 --shard 1/2 --tag r6_dongyoon_<gpu>_s1   (one GPU: drop --shard and use --tag r6_dongyoon_<gpu>_s0)
+168 shapes (3 models x 4 GEMMs x 7 M x 2 dtypes), 3 interleaved reps, resumable; the oracle at M <= 128 dominates the time (about 4 h for 112 shapes on two RTX 6000 Ada, so expect roughly 6 h on two GPUs). Analyze with `python3 eval/analyze_r6.py` after editing the glob in it to your tag (it prints verdicts, Kendall tau, tuning time, benchmark fraction; `ours1e`/`ours1f` are not in this run and are skipped). `ours_auto` includes the 5e floor and the 5g benchmark (up to 5 tiles when unsure); `ours1pc` is the 5d BLOCK_M cap.
 Older Gemma command above still works; `eval/analyze_5d.py <tag>` now reports every method present in a run.
 
 ## Repository layout
